@@ -1,12 +1,12 @@
 import { Command } from 'commander';
-import { getClient } from '../client/trpc.js';
+import { getClient } from '../client/index.js';
 import { handleError } from '../utils/errors.js';
 import {
   shouldUseJson,
   outputProjectsJson,
   outputProjectsPretty,
 } from '../utils/output.js';
-import type { Project } from '../types/project.js';
+import type { Project } from 'exponential-sdk';
 
 interface GlobalOptions {
   json?: boolean;
@@ -29,10 +29,10 @@ export function createProjectsCommand(): Command {
 
       try {
         const client = getClient();
-        const projects = await client.project.getAll.query({
+        const projects = await client.projects.list({
           workspaceId: options.workspace,
-          include: options.includeActions ? { actions: true } : undefined,
-        }) as Project[];
+          includeActions: options.includeActions,
+        });
 
         if (useJson) {
           outputProjectsJson(projects);

@@ -1,5 +1,5 @@
 import chalk from 'chalk';
-import { isTRPCError } from '../client/trpc.js';
+import { isTRPCError } from '../client/index.js';
 
 export class ExponentialError extends Error {
   constructor(

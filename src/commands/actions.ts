@@ -1,12 +1,12 @@
 import { Command } from 'commander';
-import { getClient } from '../client/trpc.js';
+import { getClient } from '../client/index.js';
 import { handleError } from '../utils/errors.js';
 import {
   shouldUseJson,
   outputActionsJson,
   outputActionsPretty,
 } from '../utils/output.js';
-import type { Action } from '../types/action.js';
+import type { Action, KanbanStatus } from 'exponential-sdk';
 
 interface GlobalOptions {
   json?: boolean;
@@ -30,37 +30,13 @@ export function createActionsCommand(): Command {
 
       try {
         const client = getClient();
-        let actions: Action[];
+        const kanbanStatus = options.status as KanbanStatus | undefined;
 
-        if (options.project) {
-          // Use getProjectActions for project-specific queries
-          actions = await client.action.getProjectActions.query({
-            projectId: options.project,
-            assigneeId: options.assignee,
-          }) as Action[];
-        } else if (options.status) {
-          // Use getKanbanActions for status filtering
-          const kanbanStatus = options.status as 'BACKLOG' | 'TODO' | 'IN_PROGRESS' | 'IN_REVIEW' | 'DONE' | 'CANCELLED';
-          actions = await client.action.getKanbanActions.query({
-            kanbanStatus,
-            assigneeId: options.assignee,
-          }) as Action[];
-        } else {
-          // Use getAll for general listing
-          actions = await client.action.getAll.query({
-            assigneeId: options.assignee,
-          }) as Action[];
-        }
-
-        // Filter out completed/cancelled if no status specified
-        if (!options.status) {
-          actions = actions.filter(a =>
-            a.status !== 'COMPLETED' &&
-            a.status !== 'CANCELLED' &&
-            a.kanbanStatus !== 'DONE' &&
-            a.kanbanStatus !== 'CANCELLED'
-          );
-        }
+        const actions = await client.actions.list({
+          projectId: options.project,
+          status: kanbanStatus,
+          assigneeId: options.assignee,
+        });
 
         if (useJson) {
           outputActionsJson(actions, {
@@ -85,9 +61,7 @@ export function createActionsCommand(): Command {
 
       try {
         const client = getClient();
-        const actions = await client.action.getToday.query({
-          workspaceId: options.workspace,
-        }) as Action[];
+        const actions = await client.actions.getToday(options.workspace);
 
         if (useJson) {
           outputActionsJson(actions, { workspaceId: options.workspace });
@@ -118,11 +92,7 @@ export function createActionsCommand(): Command {
         }
 
         const client = getClient();
-        const actions = await client.action.getByDateRange.query({
-          startDate,
-          endDate,
-          workspaceId: options.workspace,
-        }) as Action[];
+        const actions = await client.actions.getByDateRange(startDate, endDate, options.workspace);
 
         if (useJson) {
           outputActionsJson(actions, { workspaceId: options.workspace });
@@ -146,13 +116,13 @@ export function createActionsCommand(): Command {
 
       try {
         const client = getClient();
-        const kanbanStatus = options.status as 'BACKLOG' | 'TODO' | 'IN_PROGRESS' | 'IN_REVIEW' | 'DONE' | 'CANCELLED' | undefined;
+        const kanbanStatus = options.status as KanbanStatus | undefined;
 
-        const actions = await client.action.getKanbanActions.query({
+        const actions = await client.actions.getKanban({
           projectId: options.project,
-          kanbanStatus,
+          status: kanbanStatus,
           assigneeId: options.assignee,
-        }) as Action[];
+        });
 
         if (useJson) {
           outputActionsJson(actions, {

@@ -1,6 +1,6 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
-import { getClient } from '../client/trpc.js';
+import { getClient } from '../client/index.js';
 import { getConfig, setConfig } from '../config/index.js';
 import { handleError } from '../utils/errors.js';
 import {
@@ -8,7 +8,7 @@ import {
   outputWorkspacesJson,
   outputWorkspacesPretty,
 } from '../utils/output.js';
-import type { Workspace } from '../types/workspace.js';
+import type { Workspace } from 'exponential-sdk';
 
 interface GlobalOptions {
   json?: boolean;
@@ -28,7 +28,7 @@ export function createWorkspacesCommand(): Command {
 
       try {
         const client = getClient();
-        const workspaces = await client.workspace.list.query() as Workspace[];
+        const workspaces = await client.workspaces.list();
 
         if (useJson) {
           outputWorkspacesJson(workspaces);
@@ -51,7 +51,7 @@ export function createWorkspacesCommand(): Command {
     .action(async (slug: string) => {
       try {
         const client = getClient();
-        const workspaces = await client.workspace.list.query() as Workspace[];
+        const workspaces = await client.workspaces.list();
 
         const workspace = workspaces.find((w: Workspace) => w.slug === slug);
 

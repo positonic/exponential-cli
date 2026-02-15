@@ -1,7 +1,15 @@
 import chalk from 'chalk';
-import type { Action, ActionOutput, ActionsListOutput } from '../types/action.js';
-import type { Project, ProjectOutput, ProjectsListOutput } from '../types/project.js';
-import type { Workspace, WorkspaceOutput, WorkspacesListOutput } from '../types/workspace.js';
+import type {
+  Action,
+  ActionOutput,
+  ActionsListOutput,
+  Project,
+  ProjectOutput,
+  ProjectsListOutput,
+  Workspace,
+  WorkspaceOutput,
+  WorkspacesListOutput,
+} from 'exponential-sdk';
 
 // Detect if output is being piped
 export function shouldUseJson(forceJson?: boolean, forcePretty?: boolean): boolean {

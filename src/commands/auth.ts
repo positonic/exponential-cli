@@ -1,7 +1,7 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { getConfig, setConfig, clearConfig, isAuthenticated, getConfigPath } from '../config/index.js';
-import { getClient, resetClient } from '../client/trpc.js';
+import { getClient, resetClient } from '../client/index.js';
 import { handleError } from '../utils/errors.js';
 
 export function createAuthCommand(): Command {
@@ -35,7 +35,7 @@ export function createAuthCommand(): Command {
         // Validate by trying to list workspaces
         console.log(chalk.gray('Validating token...'));
         const client = getClient();
-        await client.workspace.list.query();
+        await client.workspaces.list();
 
         console.log(chalk.green('Successfully authenticated!'));
         console.log(chalk.gray(`Config saved to: ${getConfigPath()}`));
@@ -71,7 +71,7 @@ export function createAuthCommand(): Command {
         const client = getClient();
 
         // Validate token by listing workspaces
-        const workspaces = await client.workspace.list.query();
+        const workspaces = await client.workspaces.list();
 
         console.log(chalk.green('Authenticated'));
         console.log(chalk.gray(`API URL: ${config.apiUrl}`));
