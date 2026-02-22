@@ -75,6 +75,41 @@ export function transformWorkspace(workspace: Workspace): WorkspaceOutput {
   };
 }
 
+// Output single action as JSON
+export function outputActionJson(action: Action): void {
+  const output = transformAction(action);
+  console.log(JSON.stringify(output, null, 2));
+}
+
+// Output single action in pretty format
+export function outputActionPretty(action: Action): void {
+  const statusColor = getKanbanStatusColor(action.kanbanStatus);
+  const statusBadge = action.kanbanStatus
+    ? chalk[statusColor](`[${action.kanbanStatus}]`)
+    : chalk.gray('[NO STATUS]');
+
+  console.log(chalk.green('\n✓ Action created successfully'));
+  console.log(chalk.gray('─'.repeat(50)));
+  console.log(`\n${statusBadge} ${chalk.bold(action.name)}`);
+  console.log(chalk.gray(`  ID: ${action.id}`));
+
+  if (action.project) {
+    console.log(`  ${chalk.cyan('Project:')} ${action.project.name}`);
+  }
+
+  console.log(`  ${chalk.magenta('Priority:')} ${action.priority}`);
+
+  if (action.dueDate) {
+    const dueDate = new Date(action.dueDate);
+    console.log(`  ${chalk.yellow('Due:')} ${formatDate(dueDate)}`);
+  }
+
+  if (action.description) {
+    console.log(`  ${chalk.gray('Description:')} ${action.description.substring(0, 100)}${action.description.length > 100 ? '...' : ''}`);
+  }
+  console.log();
+}
+
 // Output actions as JSON
 export function outputActionsJson(actions: Action[], filters: ActionsListOutput['filters'] = {}): void {
   const output: ActionsListOutput = {
