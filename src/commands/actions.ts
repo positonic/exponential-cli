@@ -154,6 +154,70 @@ export function createActionsCommand(): Command {
     });
 
   actions
+    .command('update')
+    .description('Update an existing action')
+    .requiredOption('--id <id>', 'Action ID to update')
+    .option('-n, --name <name>', 'New action name')
+    .option('-d, --description <text>', 'New description')
+    .option('-p, --project <id>', 'Move to project ID')
+    .option('--priority <priority>', 'Priority (Quick, Scheduled, 1st Priority, etc.)')
+    .option('--status <status>', 'Status (ACTIVE, COMPLETED, CANCELLED)')
+    .option('--kanban <status>', 'Kanban status (BACKLOG, TODO, IN_PROGRESS, IN_REVIEW, DONE)')
+    .option('--due <date>', 'Due date (YYYY-MM-DD or "null" to clear)')
+    .action(async (options: {
+      id: string;
+      name?: string;
+      description?: string;
+      project?: string;
+      priority?: string;
+      status?: string;
+      kanban?: string;
+      due?: string;
+    }, cmd: Command) => {
+      const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+      const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+
+      try {
+        // Validate priority if provided
+        if (options.priority && !VALID_PRIORITIES.includes(options.priority as Priority)) {
+          throw new Error(`Invalid priority "${options.priority}". Valid values: ${VALID_PRIORITIES.join(', ')}`);
+        }
+
+        // Parse due date if provided
+        let dueDate: Date | null | undefined;
+        if (options.due === 'null') {
+          dueDate = null;
+        } else if (options.due) {
+          dueDate = new Date(options.due);
+          if (isNaN(dueDate.getTime())) {
+            throw new Error('Invalid due date format. Use YYYY-MM-DD');
+          }
+        }
+
+        const client = getClient();
+        const action = await client.actions.update({
+          id: options.id,
+          name: options.name,
+          description: options.description,
+          projectId: options.project,
+          priority: options.priority as Priority | undefined,
+          status: options.status as 'ACTIVE' | 'COMPLETED' | 'CANCELLED' | undefined,
+          kanbanStatus: options.kanban as 'BACKLOG' | 'TODO' | 'IN_PROGRESS' | 'IN_REVIEW' | 'DONE' | 'CANCELLED' | undefined,
+          dueDate,
+        });
+
+        if (useJson) {
+          outputActionJson(action);
+        } else {
+          console.log('\n✓ Action updated successfully');
+          outputActionPretty(action);
+        }
+      } catch (error) {
+        handleError(error, useJson);
+      }
+    });
+
+  actions
     .command('create')
     .description('Create a new action')
     .requiredOption('-n, --name <name>', 'Action name/title')
@@ -201,6 +265,7 @@ export function createActionsCommand(): Command {
         if (useJson) {
           outputActionJson(action);
         } else {
+          console.log('\n✓ Action created successfully');
           outputActionPretty(action);
         }
       } catch (error) {

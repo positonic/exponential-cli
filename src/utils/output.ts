@@ -88,7 +88,6 @@ export function outputActionPretty(action: Action): void {
     ? chalk[statusColor](`[${action.kanbanStatus}]`)
     : chalk.gray('[NO STATUS]');
 
-  console.log(chalk.green('\n✓ Action created successfully'));
   console.log(chalk.gray('─'.repeat(50)));
   console.log(`\n${statusBadge} ${chalk.bold(action.name)}`);
   console.log(chalk.gray(`  ID: ${action.id}`));
