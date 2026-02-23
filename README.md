@@ -63,6 +63,13 @@ exponential actions list --project <project-id>
 # List actions with a specific kanban status
 exponential actions list --status IN_PROGRESS
 
+# Create an action
+exponential actions create -n "Task name" -d "Description" -p <project-id> --priority "1st Priority"
+
+# Update an action
+exponential actions update --id <action-id> --kanban DONE
+exponential actions update --id <action-id> -n "New name" --priority "2nd Priority" --due 2026-03-15
+
 # Get today's actions
 exponential actions today
 
@@ -135,6 +142,16 @@ Force human-readable output:
 ```bash
 exponential actions list --pretty
 ```
+
+## Works with OpenClaw
+
+If you use [OpenClaw](https://github.com/openclaw/openclaw), install the Exponential skill to give your AI agent full access to actions, projects, and kanban boards:
+
+```bash
+npx clawhub install exponential
+```
+
+Your agent can then create tasks, update statuses, and manage projects through natural conversation.
 
 ## LLM Integration
 
