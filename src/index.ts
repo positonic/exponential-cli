@@ -2,6 +2,8 @@
 import { Command } from 'commander';
 import { createAuthCommand } from './commands/auth.js';
 import { createActionsCommand } from './commands/actions.js';
+import { createContactsCommand } from './commands/contacts.js';
+import { createDealsCommand } from './commands/deals.js';
 import { createProjectsCommand } from './commands/projects.js';
 import { createWorkspacesCommand } from './commands/workspaces.js';
 
@@ -17,6 +19,8 @@ program
 // Add subcommands
 program.addCommand(createAuthCommand());
 program.addCommand(createActionsCommand());
+program.addCommand(createContactsCommand());
+program.addCommand(createDealsCommand());
 program.addCommand(createProjectsCommand());
 program.addCommand(createWorkspacesCommand());
 
