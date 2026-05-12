@@ -7,6 +7,10 @@ import {
   outputActionsPretty,
   outputActionJson,
   outputActionPretty,
+  outputCommentJson,
+  outputCommentPretty,
+  outputCommentsJson,
+  outputCommentsPretty,
 } from '../utils/output.js';
 import type { Action, KanbanStatus, Priority } from 'exponential-sdk';
 
@@ -226,6 +230,8 @@ export function createActionsCommand(): Command {
     .option('--priority <priority>', 'Priority (Quick, Scheduled, 1st Priority, etc.)')
     .option('--due <date>', 'Due date (YYYY-MM-DD)')
     .option('--effort <minutes>', 'Effort estimate in minutes', parseInt)
+    .option('--ticket <id>', 'Link action to a product ticket (CUID) after creation')
+    .option('--epic <id>', 'Epic CUID to attach the action to')
     .action(async (options: {
       name: string;
       description?: string;
@@ -233,6 +239,8 @@ export function createActionsCommand(): Command {
       priority?: string;
       due?: string;
       effort?: number;
+      ticket?: string;
+      epic?: string;
     }, cmd: Command) => {
       const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
       const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
@@ -253,14 +261,22 @@ export function createActionsCommand(): Command {
         }
 
         const client = getClient();
-        const action = await client.actions.create({
+        let action = await client.actions.create({
           name: options.name,
           description: options.description,
           projectId: options.project,
           priority: options.priority as Priority | undefined,
           dueDate,
           effortEstimate: options.effort,
+          epicId: options.epic,
         });
+
+        // The server's action.create router doesn't accept ticketId, so when
+        // --ticket is requested we link via the product.ticket.linkAction RPC
+        // and re-use its updated return value.
+        if (options.ticket) {
+          action = await client.tickets.linkAction(options.ticket, action.id);
+        }
 
         if (useJson) {
           outputActionJson(action);
@@ -272,6 +288,98 @@ export function createActionsCommand(): Command {
         handleError(error, useJson);
       }
     });
+
+  const comment = new Command('comment')
+    .description('Manage comments on an action');
+
+  comment
+    .command('list')
+    .description('List comments on an action')
+    .requiredOption('--id <id>', 'Action ID')
+    .action(async (options: { id: string }, cmd: Command) => {
+      const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+      const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+      try {
+        const client = getClient();
+        const comments = await client.actionComments.list(options.id);
+        if (useJson) outputCommentsJson(comments);
+        else outputCommentsPretty(comments);
+      } catch (error) {
+        handleError(error, useJson);
+      }
+    });
+
+  comment
+    .command('add')
+    .description('Add a comment to an action')
+    .requiredOption('--id <id>', 'Action ID')
+    .requiredOption('-m, --message <text>', 'Comment content (markdown supported)')
+    .action(async (options: { id: string; message: string }, cmd: Command) => {
+      const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+      const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+      try {
+        const client = getClient();
+        const created = await client.actionComments.add({
+          actionId: options.id,
+          content: options.message,
+        });
+        if (useJson) {
+          outputCommentJson(created);
+        } else {
+          console.log('\n✓ Comment added');
+          outputCommentPretty(created);
+        }
+      } catch (error) {
+        handleError(error, useJson);
+      }
+    });
+
+  comment
+    .command('update')
+    .description("Update one of your own comments")
+    .requiredOption('--comment-id <id>', 'Comment ID')
+    .requiredOption('-m, --message <text>', 'New comment content')
+    .action(async (options: { commentId: string; message: string }, cmd: Command) => {
+      const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+      const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+      try {
+        const client = getClient();
+        const updated = await client.actionComments.update({
+          commentId: options.commentId,
+          content: options.message,
+        });
+        if (useJson) {
+          outputCommentJson(updated);
+        } else {
+          console.log('\n✓ Comment updated');
+          outputCommentPretty(updated);
+        }
+      } catch (error) {
+        handleError(error, useJson);
+      }
+    });
+
+  comment
+    .command('delete')
+    .description("Delete one of your own comments")
+    .requiredOption('--comment-id <id>', 'Comment ID')
+    .action(async (options: { commentId: string }, cmd: Command) => {
+      const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+      const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+      try {
+        const client = getClient();
+        await client.actionComments.delete(options.commentId);
+        if (useJson) {
+          console.log(JSON.stringify({ deleted: true, id: options.commentId }, null, 2));
+        } else {
+          console.log('\n✓ Comment deleted');
+        }
+      } catch (error) {
+        handleError(error, useJson);
+      }
+    });
+
+  actions.addCommand(comment);
 
   return actions;
 }

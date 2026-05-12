@@ -1,16 +1,23 @@
 import chalk from 'chalk';
 import type {
   Action,
+  ActionComment,
   ActionOutput,
   ActionsListOutput,
   Contact,
   ContactInteraction,
   Deal,
+  Epic,
+  Feature,
   Pipeline,
   PipelineStage,
+  Product,
   Project,
   ProjectOutput,
   ProjectsListOutput,
+  Ticket,
+  TicketComment,
+  TicketDetail,
   Workspace,
   WorkspaceOutput,
   WorkspacesListOutput,
@@ -469,6 +476,432 @@ export function outputStagesJson(stages: PipelineStage[]): void {
     })),
     total: stages.length,
   }, null, 2));
+}
+
+// ─── Comment output ────────────────────────────────────────
+
+type AnyComment = ActionComment | TicketComment;
+
+function transformComment(comment: AnyComment): Record<string, unknown> {
+  const parentKey = 'actionId' in comment ? 'actionId' : 'ticketId';
+  const parentId = (comment as unknown as Record<string, unknown>)[parentKey];
+  return {
+    id: comment.id,
+    [parentKey]: parentId,
+    authorId: comment.authorId,
+    content: comment.content,
+    author: comment.author,
+    createdAt: new Date(comment.createdAt).toISOString(),
+    updatedAt: new Date(comment.updatedAt).toISOString(),
+  };
+}
+
+export function outputCommentJson(comment: AnyComment): void {
+  console.log(JSON.stringify(transformComment(comment), null, 2));
+}
+
+export function outputCommentPretty(comment: AnyComment): void {
+  const author = comment.author?.name ?? comment.authorId;
+  const when = formatDate(new Date(comment.createdAt));
+  console.log(chalk.gray('─'.repeat(50)));
+  console.log(`${chalk.bold(author)} ${chalk.gray(`— ${when}`)}`);
+  console.log(chalk.gray(`  ID: ${comment.id}`));
+  console.log();
+  console.log(comment.content);
+  console.log();
+}
+
+export function outputCommentsJson(comments: AnyComment[]): void {
+  console.log(JSON.stringify({
+    comments: comments.map(transformComment),
+    total: comments.length,
+  }, null, 2));
+}
+
+export function outputCommentsPretty(comments: AnyComment[]): void {
+  if (comments.length === 0) {
+    console.log(chalk.gray('No comments.'));
+    return;
+  }
+  console.log(chalk.bold(`\nComments (${comments.length})`));
+  for (const c of comments) {
+    outputCommentPretty(c);
+  }
+}
+
+// ─── Product output ────────────────────────────────────────
+
+export function outputProductJson(product: Product): void {
+  console.log(JSON.stringify(transformProduct(product), null, 2));
+}
+
+export function outputProductPretty(product: Product): void {
+  console.log(chalk.gray('─'.repeat(50)));
+  console.log(`\n${chalk.bold(product.name)} ${chalk.gray(`(${product.slug})`)}`);
+  console.log(chalk.gray(`  ID: ${product.id}`));
+  if (product.description) {
+    console.log(`  ${chalk.gray('Description:')} ${product.description}`);
+  }
+  if (product._count) {
+    const c = product._count;
+    const parts = [
+      c.features != null ? `features: ${c.features}` : null,
+      c.tickets != null ? `tickets: ${c.tickets}` : null,
+    ].filter(Boolean);
+    if (parts.length) console.log(`  ${chalk.cyan('Counts:')} ${parts.join('  ')}`);
+  }
+  console.log();
+}
+
+export function outputProductsJson(products: Product[]): void {
+  console.log(JSON.stringify({
+    products: products.map(transformProduct),
+    total: products.length,
+  }, null, 2));
+}
+
+export function outputProductsPretty(products: Product[]): void {
+  if (products.length === 0) {
+    console.log(chalk.gray('No products found.'));
+    return;
+  }
+  console.log(chalk.bold(`\nProducts (${products.length} total)`));
+  console.log(chalk.gray('─'.repeat(50)));
+  for (const p of products) {
+    const ticketCount = p._count?.tickets != null ? chalk.gray(` — ${p._count.tickets} tickets`) : '';
+    console.log(`  ${chalk.bold(p.name)} ${chalk.gray(`(${p.slug})`)}${ticketCount}`);
+    console.log(chalk.gray(`    ID: ${p.id}`));
+  }
+  console.log();
+}
+
+function transformProduct(product: Product): Record<string, unknown> {
+  return {
+    id: product.id,
+    workspaceId: product.workspaceId,
+    name: product.name,
+    slug: product.slug,
+    description: product.description,
+    icon: product.icon,
+    color: product.color,
+    funTicketIds: product.funTicketIds,
+    ticketCounter: product.ticketCounter,
+    counts: product._count ?? null,
+    createdAt: new Date(product.createdAt).toISOString(),
+    updatedAt: new Date(product.updatedAt).toISOString(),
+  };
+}
+
+// ─── Feature output ────────────────────────────────────────
+
+export function outputFeatureJson(feature: Feature): void {
+  console.log(JSON.stringify(transformFeature(feature), null, 2));
+}
+
+export function outputFeaturePretty(feature: Feature): void {
+  console.log(chalk.gray('─'.repeat(50)));
+  console.log(`\n${chalk[getFeatureStatusColor(feature.status)](`[${feature.status}]`)} ${chalk.bold(feature.name)}`);
+  console.log(chalk.gray(`  ID: ${feature.id}`));
+  if (feature.description) {
+    console.log(`  ${chalk.gray('Description:')} ${feature.description.substring(0, 120)}${feature.description.length > 120 ? '...' : ''}`);
+  }
+  if (feature.vision) {
+    console.log(`  ${chalk.gray('Vision:')} ${feature.vision.substring(0, 120)}${feature.vision.length > 120 ? '...' : ''}`);
+  }
+  if (feature.priority != null) {
+    console.log(`  ${chalk.magenta('Priority:')} ${feature.priority}`);
+  }
+  if (feature._count?.tickets != null) {
+    console.log(`  ${chalk.cyan('Tickets:')} ${feature._count.tickets}`);
+  }
+  console.log();
+}
+
+export function outputFeaturesJson(features: Feature[]): void {
+  console.log(JSON.stringify({
+    features: features.map(transformFeature),
+    total: features.length,
+  }, null, 2));
+}
+
+export function outputFeaturesPretty(features: Feature[]): void {
+  if (features.length === 0) {
+    console.log(chalk.gray('No features found.'));
+    return;
+  }
+  console.log(chalk.bold(`\nFeatures (${features.length} total)`));
+  console.log(chalk.gray('─'.repeat(50)));
+  for (const f of features) {
+    const statusBadge = chalk[getFeatureStatusColor(f.status)](`[${f.status}]`);
+    const ticketCount = f._count?.tickets != null ? chalk.gray(` — ${f._count.tickets} tickets`) : '';
+    console.log(`  ${statusBadge} ${chalk.bold(f.name)}${ticketCount}`);
+    console.log(chalk.gray(`    ID: ${f.id}`));
+  }
+  console.log();
+}
+
+function transformFeature(feature: Feature): Record<string, unknown> {
+  return {
+    id: feature.id,
+    productId: feature.productId,
+    name: feature.name,
+    description: feature.description,
+    vision: feature.vision,
+    status: feature.status,
+    effort: feature.effort,
+    priority: feature.priority,
+    goalId: feature.goalId,
+    goal: feature.goal ?? null,
+    counts: feature._count ?? null,
+    createdAt: new Date(feature.createdAt).toISOString(),
+    updatedAt: new Date(feature.updatedAt).toISOString(),
+  };
+}
+
+function getFeatureStatusColor(status: string): 'gray' | 'blue' | 'yellow' | 'green' | 'red' {
+  switch (status) {
+    case 'IDEA': return 'gray';
+    case 'DEFINED': return 'blue';
+    case 'IN_PROGRESS': return 'yellow';
+    case 'SHIPPED': return 'green';
+    case 'ARCHIVED': return 'red';
+    default: return 'gray';
+  }
+}
+
+// ─── Ticket output ─────────────────────────────────────────
+
+export function outputTicketJson(ticket: Ticket | TicketDetail): void {
+  console.log(JSON.stringify(transformTicket(ticket), null, 2));
+}
+
+export function outputTicketPretty(ticket: Ticket | TicketDetail): void {
+  const id = ticket.shortId ?? (ticket.number != null ? `#${ticket.number}` : '?');
+  console.log(chalk.gray('─'.repeat(50)));
+  console.log(
+    `\n${chalk[getTicketStatusColor(ticket.status)](`[${ticket.status}]`)} ${chalk.gray(`[${ticket.type}]`)} ${chalk.bold(`${id} ${ticket.title}`)}`,
+  );
+  console.log(chalk.gray(`  ID: ${ticket.id}`));
+  if (ticket.isBlocked) {
+    console.log(`  ${chalk.red('BLOCKED')} by ${ticket.openBlockerCount ?? 0} open ticket(s)`);
+  } else if (ticket.openBlockerCount && ticket.openBlockerCount > 0) {
+    console.log(`  ${chalk.yellow('Blockers:')} ${ticket.openBlockerCount} open (not currently in flight)`);
+  }
+  if (ticket.feature) {
+    console.log(`  ${chalk.cyan('Feature:')} ${ticket.feature.name}`);
+  }
+  if (ticket.epic) {
+    console.log(`  ${chalk.cyan('Epic:')} ${ticket.epic.name}`);
+  }
+  if (ticket.assignee) {
+    console.log(`  ${chalk.magenta('Assignee:')} ${ticket.assignee.name ?? ticket.assignee.id}`);
+  }
+  if (ticket.priority != null) {
+    console.log(`  ${chalk.magenta('Priority:')} ${ticket.priority}`);
+  }
+  if (ticket.points != null) {
+    console.log(`  ${chalk.yellow('Points:')} ${ticket.points}`);
+  }
+  if (ticket.body) {
+    console.log(`  ${chalk.gray('Body:')} ${ticket.body.substring(0, 200)}${ticket.body.length > 200 ? '...' : ''}`);
+  }
+
+  const detail = ticket as TicketDetail;
+  if (detail.dependsOn && detail.dependsOn.length > 0) {
+    console.log(`  ${chalk.cyan('Depends on:')}`);
+    for (const dep of detail.dependsOn) {
+      const depId = dep.shortId ?? (dep.number != null ? `#${dep.number}` : '?');
+      console.log(`    - ${chalk.gray(`[${dep.status}]`)} ${depId} ${dep.title}`);
+    }
+  }
+  if (detail.requiredFor && detail.requiredFor.length > 0) {
+    console.log(`  ${chalk.cyan('Required for:')}`);
+    for (const dep of detail.requiredFor) {
+      const depId = dep.shortId ?? (dep.number != null ? `#${dep.number}` : '?');
+      console.log(`    - ${chalk.gray(`[${dep.status}]`)} ${depId} ${dep.title}`);
+    }
+  }
+  if (detail.actions && detail.actions.length > 0) {
+    console.log(`  ${chalk.cyan('Actions:')} ${detail.actions.length}`);
+    for (const a of detail.actions) {
+      console.log(`    - ${chalk.gray(`[${a.kanbanStatus ?? a.status}]`)} ${a.name} ${chalk.gray(`(${a.id})`)}`);
+    }
+  }
+  console.log();
+}
+
+export function outputTicketsJson(tickets: Ticket[]): void {
+  console.log(JSON.stringify({
+    tickets: tickets.map(transformTicket),
+    total: tickets.length,
+  }, null, 2));
+}
+
+export function outputTicketsPretty(tickets: Ticket[]): void {
+  if (tickets.length === 0) {
+    console.log(chalk.gray('No tickets found.'));
+    return;
+  }
+  console.log(chalk.bold(`\nTickets (${tickets.length} total)`));
+  console.log(chalk.gray('─'.repeat(50)));
+  for (const t of tickets) {
+    const id = t.shortId ?? (t.number != null ? `#${t.number}` : '?');
+    const statusBadge = chalk[getTicketStatusColor(t.status)](`[${t.status}]`);
+    const typeBadge = chalk.gray(`[${t.type}]`);
+    const blocked = t.isBlocked ? chalk.red(' BLOCKED') : '';
+    console.log(`  ${statusBadge} ${typeBadge} ${chalk.bold(id)} ${t.title}${blocked}`);
+    console.log(chalk.gray(`    ID: ${t.id}`));
+  }
+  console.log();
+}
+
+function transformTicket(ticket: Ticket | TicketDetail): Record<string, unknown> {
+  const detail = ticket as TicketDetail;
+  return {
+    id: ticket.id,
+    productId: ticket.productId,
+    number: ticket.number,
+    shortId: ticket.shortId,
+    title: ticket.title,
+    body: ticket.body,
+    type: ticket.type,
+    status: ticket.status,
+    priority: ticket.priority,
+    points: ticket.points,
+    branchName: ticket.branchName,
+    prUrl: ticket.prUrl,
+    designUrl: ticket.designUrl,
+    specUrl: ticket.specUrl,
+    links: ticket.links,
+    epicId: ticket.epicId,
+    featureId: ticket.featureId,
+    cycleId: ticket.cycleId,
+    scopeId: ticket.scopeId,
+    assigneeId: ticket.assigneeId,
+    assignee: ticket.assignee ?? null,
+    feature: ticket.feature ?? null,
+    epic: ticket.epic ?? null,
+    openBlockerCount: ticket.openBlockerCount ?? 0,
+    isBlocked: ticket.isBlocked ?? false,
+    counts: ticket._count ?? null,
+    dependsOn: detail.dependsOn ?? undefined,
+    requiredFor: detail.requiredFor ?? undefined,
+    actions: detail.actions?.map((a) => ({
+      id: a.id,
+      name: a.name,
+      status: a.status,
+      kanbanStatus: a.kanbanStatus,
+      completedAt: a.completedAt ? new Date(a.completedAt).toISOString() : null,
+    })),
+    completedAt: ticket.completedAt ? new Date(ticket.completedAt).toISOString() : null,
+    createdAt: new Date(ticket.createdAt).toISOString(),
+    updatedAt: new Date(ticket.updatedAt).toISOString(),
+  };
+}
+
+function getTicketStatusColor(status: string): 'gray' | 'blue' | 'yellow' | 'cyan' | 'green' | 'red' | 'magenta' {
+  switch (status) {
+    case 'BACKLOG': return 'gray';
+    case 'NEEDS_REFINEMENT': return 'gray';
+    case 'READY_TO_PLAN': return 'blue';
+    case 'COMMITTED': return 'blue';
+    case 'IN_PROGRESS': return 'yellow';
+    case 'BLOCKED': return 'red';
+    case 'QA': return 'cyan';
+    case 'DONE': return 'green';
+    case 'DEPLOYED': return 'green';
+    case 'ARCHIVED': return 'gray';
+    default: return 'gray';
+  }
+}
+
+// ─── Epic output ───────────────────────────────────────────
+
+export function outputEpicJson(epic: Epic): void {
+  console.log(JSON.stringify(transformEpic(epic), null, 2));
+}
+
+export function outputEpicPretty(epic: Epic): void {
+  console.log(chalk.gray('─'.repeat(50)));
+  console.log(`\n${chalk[getEpicStatusColor(epic.status)](`[${epic.status}]`)} ${chalk.bold(epic.name)}`);
+  console.log(chalk.gray(`  ID: ${epic.id}`));
+  if (epic.description) {
+    console.log(`  ${chalk.gray('Description:')} ${epic.description.substring(0, 200)}${epic.description.length > 200 ? '...' : ''}`);
+  }
+  console.log(`  ${chalk.magenta('Priority:')} ${epic.priority}`);
+  if (epic.startDate) {
+    console.log(`  ${chalk.cyan('Start:')} ${formatDate(new Date(epic.startDate))}`);
+  }
+  if (epic.targetDate) {
+    console.log(`  ${chalk.cyan('Target:')} ${formatDate(new Date(epic.targetDate))}`);
+  }
+  if (epic.owner) {
+    console.log(`  ${chalk.gray('Owner:')} ${epic.owner.name ?? epic.owner.email ?? epic.owner.id}`);
+  }
+  if (epic._count) {
+    const c = epic._count;
+    const parts = [
+      c.actions != null ? `actions: ${c.actions}` : null,
+      c.tickets != null ? `tickets: ${c.tickets}` : null,
+    ].filter(Boolean);
+    if (parts.length) console.log(`  ${chalk.cyan('Counts:')} ${parts.join('  ')}`);
+  }
+  console.log();
+}
+
+export function outputEpicsJson(epics: Epic[]): void {
+  console.log(JSON.stringify({
+    epics: epics.map(transformEpic),
+    total: epics.length,
+  }, null, 2));
+}
+
+export function outputEpicsPretty(epics: Epic[]): void {
+  if (epics.length === 0) {
+    console.log(chalk.gray('No epics found.'));
+    return;
+  }
+  console.log(chalk.bold(`\nEpics (${epics.length} total)`));
+  console.log(chalk.gray('─'.repeat(50)));
+  for (const e of epics) {
+    const statusBadge = chalk[getEpicStatusColor(e.status)](`[${e.status}]`);
+    const counts = e._count
+      ? chalk.gray(
+          ` — ${e._count.tickets ?? 0} tickets, ${e._count.actions ?? 0} actions`,
+        )
+      : '';
+    console.log(`  ${statusBadge} ${chalk.bold(e.name)}${counts}`);
+    console.log(chalk.gray(`    ID: ${e.id}`));
+  }
+  console.log();
+}
+
+function transformEpic(epic: Epic): Record<string, unknown> {
+  return {
+    id: epic.id,
+    workspaceId: epic.workspaceId,
+    name: epic.name,
+    description: epic.description,
+    status: epic.status,
+    priority: epic.priority,
+    startDate: epic.startDate ? new Date(epic.startDate).toISOString() : null,
+    targetDate: epic.targetDate ? new Date(epic.targetDate).toISOString() : null,
+    ownerId: epic.ownerId,
+    owner: epic.owner ?? null,
+    counts: epic._count ?? null,
+    createdAt: new Date(epic.createdAt).toISOString(),
+    updatedAt: new Date(epic.updatedAt).toISOString(),
+  };
+}
+
+function getEpicStatusColor(status: string): 'gray' | 'blue' | 'yellow' | 'green' | 'red' {
+  switch (status) {
+    case 'OPEN': return 'blue';
+    case 'IN_PROGRESS': return 'yellow';
+    case 'DONE': return 'green';
+    case 'CANCELLED': return 'red';
+    default: return 'gray';
+  }
 }
 
 export function outputStagesPretty(stages: PipelineStage[]): void {
