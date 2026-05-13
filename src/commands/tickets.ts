@@ -3,6 +3,11 @@ import type { TicketStatus, TicketType } from 'exponential-sdk';
 import { getClient } from '../client/index.js';
 import { handleError } from '../utils/errors.js';
 import { resolveProductId, resolveWorkspaceId } from '../utils/resolve.js';
+import { resolveLabelIds } from './labels.js';
+
+function collectRepeatable(value: string, previous: string[]): string[] {
+  return [...previous, value];
+}
 import {
   shouldUseJson,
   outputCommentJson,
@@ -77,6 +82,12 @@ export function createTicketsCommand(): Command {
     .option('--feature <id>', 'Filter by feature CUID')
     .option('--epic <id>', 'Filter by epic CUID')
     .option('--assignee <id>', 'Filter by assignee user ID')
+    .option(
+      '--label <slug-or-id>',
+      'Filter to tickets carrying this label (repeatable; AND semantics)',
+      collectRepeatable,
+      [] as string[],
+    )
     .action(
       async (
         options: {
@@ -87,6 +98,7 @@ export function createTicketsCommand(): Command {
           feature?: string;
           epic?: string;
           assignee?: string;
+          label: string[];
         },
         cmd: Command,
       ) => {
@@ -110,8 +122,29 @@ export function createTicketsCommand(): Command {
             epicId: options.epic,
             assigneeId: options.assignee,
           });
-          if (useJson) outputTicketsJson(list);
-          else outputTicketsPretty(list);
+          let filtered = list;
+          if (options.label.length > 0) {
+            const labelIds = new Set(
+              await resolveLabelIds(client, workspaceId, options.label),
+            );
+            const ticketLabelSets = await Promise.all(
+              list.map((t) =>
+                client.labels
+                  .listForEntity({ entityType: 'ticket', entityId: t.id })
+                  .then((tags) => new Set(tags.map((tag) => tag.id))),
+              ),
+            );
+            filtered = list.filter((_t, idx) => {
+              const tagSet = ticketLabelSets[idx];
+              if (tagSet === undefined) return false;
+              for (const id of labelIds) {
+                if (!tagSet.has(id)) return false;
+              }
+              return true;
+            });
+          }
+          if (useJson) outputTicketsJson(filtered);
+          else outputTicketsPretty(filtered);
         } catch (error) {
           handleError(error, useJson);
         }
@@ -166,6 +199,12 @@ export function createTicketsCommand(): Command {
     .option('--branch <name>', 'Branch name')
     .option('--pr <url>', 'Pull request URL')
     .option('--workspace <slug|id>', 'Workspace (required when --product is a slug)')
+    .option(
+      '--label <slug-or-id>',
+      'Label to attach (repeatable)',
+      collectRepeatable,
+      [] as string[],
+    )
     .action(
       async (
         options: {
@@ -182,6 +221,7 @@ export function createTicketsCommand(): Command {
           branch?: string;
           pr?: string;
           workspace?: string;
+          label: string[];
         },
         cmd: Command,
       ) => {
@@ -211,6 +251,14 @@ export function createTicketsCommand(): Command {
             branchName: options.branch,
             prUrl: options.pr,
           });
+          if (options.label.length > 0) {
+            const tagIds = await resolveLabelIds(client, workspaceId, options.label);
+            await client.labels.setEntityTags({
+              entityType: 'ticket',
+              entityId: ticket.id,
+              tagIds,
+            });
+          }
           if (useJson) outputTicketJson(ticket);
           else {
             console.log('\n✓ Ticket created');
@@ -237,6 +285,18 @@ export function createTicketsCommand(): Command {
     .option('--assignee <id>', 'Assignee user ID (or "null" to unassign)')
     .option('--branch <name>', 'Branch name (or "null")')
     .option('--pr <url>', 'PR URL (or "null")')
+    .option(
+      '--add-label <slug-or-id>',
+      'Label to attach to this ticket (repeatable)',
+      collectRepeatable,
+      [] as string[],
+    )
+    .option(
+      '--remove-label <slug-or-id>',
+      'Label to detach from this ticket (repeatable)',
+      collectRepeatable,
+      [] as string[],
+    )
     .action(
       async (
         options: {
@@ -252,6 +312,8 @@ export function createTicketsCommand(): Command {
           assignee?: string;
           branch?: string;
           pr?: string;
+          addLabel: string[];
+          removeLabel: string[];
         },
         cmd: Command,
       ) => {
@@ -295,6 +357,22 @@ export function createTicketsCommand(): Command {
             branchName: parseNullableString(options.branch),
             prUrl: parseNullableString(options.pr),
           });
+          if (options.addLabel.length > 0 || options.removeLabel.length > 0) {
+            const current = await client.labels.listForEntity({
+              entityType: 'ticket',
+              entityId: options.id,
+            });
+            const currentIds = new Set(current.map((t) => t.id));
+            const addIds = await resolveLabelIds(client, undefined, options.addLabel);
+            const removeIds = await resolveLabelIds(client, undefined, options.removeLabel);
+            for (const id of addIds) currentIds.add(id);
+            for (const id of removeIds) currentIds.delete(id);
+            await client.labels.setEntityTags({
+              entityType: 'ticket',
+              entityId: options.id,
+              tagIds: [...currentIds],
+            });
+          }
           if (useJson) outputTicketJson(ticket);
           else {
             console.log('\n✓ Ticket updated');
