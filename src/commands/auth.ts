@@ -83,6 +83,34 @@ export function createAuthCommand(): Command {
     });
 
   auth
+    .command('show')
+    .description(
+      'Print parts of the current credentials. Use --token to print the raw JWT (for piping into other tools, e.g. `gh secret set EXPONENTIAL_TOKEN < <(exponential auth show --token)`).',
+    )
+    .option('--token', 'Print the raw JWT to stdout with no trailing newline')
+    .action((options: { token?: boolean }) => {
+      const config = getConfig();
+      if (options.token) {
+        if (!config.token) {
+          console.error('Not authenticated. Run `exponential auth login` first.');
+          process.exit(1);
+        }
+        process.stdout.write(config.token);
+        return;
+      }
+      console.log(chalk.bold('\nCredentials'));
+      console.log(chalk.gray('─'.repeat(40)));
+      console.log(`API URL: ${config.apiUrl || chalk.gray('(not set)')}`);
+      console.log(
+        `Token: ${config.token ? chalk.gray(`${config.token.substring(0, 20)}...`) : chalk.gray('(not set)')}`,
+      );
+      console.log(
+        chalk.gray('Use `exponential auth show --token` to print the raw JWT.'),
+      );
+      console.log();
+    });
+
+  auth
     .command('status')
     .description('Show detailed authentication status')
     .action(() => {

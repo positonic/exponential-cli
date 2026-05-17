@@ -74,14 +74,27 @@ export function createTicketsCommand(): Command {
 
   tickets
     .command('list')
-    .description('List tickets in a product')
-    .requiredOption('--product <slug|id>', 'Product slug or CUID')
+    .description(
+      'List tickets in a product, or workspace-wide when --pr or --branch is supplied',
+    )
+    .option(
+      '--product <slug|id>',
+      'Product slug or CUID (required unless --pr or --branch is supplied)',
+    )
     .option('--workspace <slug|id>', 'Workspace (required when --product is a slug)')
     .option('--status <status>', `Filter by status: ${TICKET_STATUSES.join(', ')}`)
     .option('--type <type>', `Filter by type: ${TICKET_TYPES.join(', ')}`)
     .option('--feature <id>', 'Filter by feature CUID')
     .option('--epic <id>', 'Filter by epic CUID')
     .option('--assignee <id>', 'Filter by assignee user ID')
+    .option(
+      '--pr <url>',
+      'Workspace-wide lookup by Ticket.prUrl (exact match). Makes --product optional.',
+    )
+    .option(
+      '--branch <name>',
+      'Workspace-wide lookup by Ticket.branchName (exact match). Makes --product optional.',
+    )
     .option(
       '--label <slug-or-id>',
       'Filter to tickets carrying this label (repeatable; AND semantics)',
@@ -91,13 +104,15 @@ export function createTicketsCommand(): Command {
     .action(
       async (
         options: {
-          product: string;
+          product?: string;
           workspace?: string;
           status?: string;
           type?: string;
           feature?: string;
           epic?: string;
           assignee?: string;
+          pr?: string;
+          branch?: string;
           label: string[];
         },
         cmd: Command,
@@ -107,13 +122,23 @@ export function createTicketsCommand(): Command {
         try {
           const status = validateTicketStatus(options.status);
           const type = validateTicketType(options.type);
+          const hasWorkspaceFilter = Boolean(options.pr || options.branch);
+          if (!hasWorkspaceFilter && !options.product) {
+            throw new Error(
+              '--product is required unless --pr or --branch is supplied',
+            );
+          }
           const client = getClient();
-          const workspaceId = await resolveWorkspaceId(client, options.workspace);
-          const productId = await resolveProductId(
-            client,
-            workspaceId,
-            options.product,
-          );
+          let workspaceId: string | undefined;
+          let productId: string | undefined;
+          if (options.product) {
+            workspaceId = await resolveWorkspaceId(client, options.workspace);
+            productId = await resolveProductId(
+              client,
+              workspaceId,
+              options.product,
+            );
+          }
           const list = await client.tickets.list({
             productId,
             status,
@@ -121,6 +146,8 @@ export function createTicketsCommand(): Command {
             featureId: options.feature,
             epicId: options.epic,
             assigneeId: options.assignee,
+            prUrl: options.pr,
+            branchName: options.branch,
           });
           let filtered = list;
           if (options.label.length > 0) {
