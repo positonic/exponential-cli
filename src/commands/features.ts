@@ -3,6 +3,7 @@ import type { FeatureStatus } from 'exponential-sdk';
 import { getClient } from '../client/index.js';
 import { handleError } from '../utils/errors.js';
 import { resolveProductId, resolveWorkspaceId } from '../utils/resolve.js';
+import { createStoriesCommand } from './stories.js';
 import {
   shouldUseJson,
   outputFeaturesJson,
@@ -189,6 +190,8 @@ export function createFeaturesCommand(): Command {
         }
       },
     );
+
+  features.addCommand(createStoriesCommand());
 
   return features;
 }

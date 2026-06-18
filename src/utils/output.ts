@@ -18,6 +18,7 @@ import type {
   Ticket,
   TicketComment,
   TicketDetail,
+  UserStory,
   Workspace,
   WorkspaceOutput,
   WorkspacesListOutput,
@@ -667,6 +668,101 @@ function getFeatureStatusColor(status: string): 'gray' | 'blue' | 'yellow' | 'gr
     case 'ARCHIVED': return 'red';
     default: return 'gray';
   }
+}
+
+// ─── User story output ─────────────────────────────────────
+
+function transformUserStory(story: UserStory): Record<string, unknown> {
+  return {
+    id: story.id,
+    featureId: story.featureId,
+    scopeId: story.scopeId,
+    asA: story.asA,
+    iWant: story.iWant,
+    soThat: story.soThat,
+    acceptanceCriteria: story.acceptanceCriteria,
+    displayOrder: story.displayOrder,
+    createdAt: new Date(story.createdAt).toISOString(),
+    updatedAt: new Date(story.updatedAt).toISOString(),
+  };
+}
+
+export function outputUserStoryJson(story: UserStory): void {
+  console.log(JSON.stringify(transformUserStory(story), null, 2));
+}
+
+export function outputUserStoryPretty(story: UserStory): void {
+  console.log(chalk.gray('─'.repeat(50)));
+  const order = chalk.gray(`#${story.displayOrder}`);
+  console.log(`\n${order} ${chalk.bold(story.iWant ?? '(no "I want")')}`);
+  console.log(chalk.gray(`  ID: ${story.id}`));
+  if (story.asA) console.log(`  ${chalk.cyan('As a:')} ${story.asA}`);
+  if (story.iWant) console.log(`  ${chalk.cyan('I want:')} ${story.iWant}`);
+  if (story.soThat) console.log(`  ${chalk.cyan('So that:')} ${story.soThat}`);
+  if (story.acceptanceCriteria) {
+    console.log(`  ${chalk.yellow('Acceptance:')} ${story.acceptanceCriteria}`);
+  }
+  if (story.scopeId) console.log(`  ${chalk.magenta('Scope:')} ${story.scopeId}`);
+  console.log();
+}
+
+export function outputUserStoriesJson(stories: UserStory[]): void {
+  console.log(JSON.stringify({
+    userStories: stories.map(transformUserStory),
+    total: stories.length,
+  }, null, 2));
+}
+
+export function outputUserStoriesPretty(stories: UserStory[]): void {
+  if (stories.length === 0) {
+    console.log(chalk.gray('No user stories found.'));
+    return;
+  }
+  console.log(chalk.bold(`\nUser stories (${stories.length} total)`));
+  console.log(chalk.gray('─'.repeat(50)));
+  for (const story of stories) {
+    const order = chalk.gray(`#${story.displayOrder}`);
+    const parts = [
+      story.asA ? `As a ${story.asA},` : null,
+      story.iWant ? `I want ${story.iWant},` : null,
+      story.soThat ? `so that ${story.soThat}.` : null,
+    ].filter(Boolean).join(' ');
+    console.log(`  ${order} ${parts || chalk.gray('(empty)')}`);
+    console.log(chalk.gray(`    ID: ${story.id}`));
+  }
+  console.log();
+}
+
+// Output a batch add summary (per-item success/failure).
+export interface BatchStoryResult {
+  index: number;
+  ok: boolean;
+  id?: string;
+  error?: string;
+}
+
+export function outputBatchResultsJson(results: BatchStoryResult[]): void {
+  const succeeded = results.filter((r) => r.ok).length;
+  console.log(JSON.stringify({
+    results,
+    total: results.length,
+    succeeded,
+    failed: results.length - succeeded,
+  }, null, 2));
+}
+
+export function outputBatchResultsPretty(results: BatchStoryResult[]): void {
+  const succeeded = results.filter((r) => r.ok).length;
+  console.log(chalk.bold(`\nAdded ${succeeded}/${results.length} user stories`));
+  console.log(chalk.gray('─'.repeat(50)));
+  for (const r of results) {
+    if (r.ok) {
+      console.log(`  ${chalk.green('✓')} [${r.index}] ${chalk.gray(r.id ?? '')}`);
+    } else {
+      console.log(`  ${chalk.red('✗')} [${r.index}] ${r.error ?? 'failed'}`);
+    }
+  }
+  console.log();
 }
 
 // ─── Ticket output ─────────────────────────────────────────
