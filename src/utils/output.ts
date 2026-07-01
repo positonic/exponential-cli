@@ -9,6 +9,7 @@ import type {
   Deal,
   Epic,
   Feature,
+  Organization,
   Pipeline,
   PipelineStage,
   Product,
@@ -354,6 +355,64 @@ export function outputInteractionPretty(interaction: ContactInteraction): void {
   console.log(`  ${chalk.cyan('Type:')} ${interaction.type} (${interaction.direction})`);
   if (interaction.subject) console.log(`  ${chalk.bold('Subject:')} ${interaction.subject}`);
   if (interaction.notes) console.log(`  ${chalk.gray('Notes:')} ${interaction.notes}`);
+  console.log();
+}
+
+// ─── Organization output ───────────────────────────────────
+
+function transformOrganization(org: Organization): Record<string, unknown> {
+  return {
+    id: org.id,
+    workspaceId: org.workspaceId,
+    name: org.name,
+    websiteUrl: org.websiteUrl,
+    logoUrl: org.logoUrl,
+    description: org.description,
+    industry: org.industry,
+    size: org.size,
+    contactCount: org._count?.contacts ?? null,
+    createdAt: new Date(org.createdAt).toISOString(),
+    updatedAt: new Date(org.updatedAt).toISOString(),
+  };
+}
+
+export function outputOrganizationJson(org: Organization): void {
+  console.log(JSON.stringify(transformOrganization(org), null, 2));
+}
+
+export function outputOrganizationPretty(org: Organization): void {
+  console.log(chalk.gray('─'.repeat(50)));
+  console.log(`\n${chalk.bold(org.name)}`);
+  console.log(chalk.gray(`  ID: ${org.id}`));
+  if (org.industry) console.log(`  ${chalk.magenta('Industry:')} ${org.industry}`);
+  if (org.size) console.log(`  ${chalk.cyan('Size:')} ${org.size}`);
+  if (org.websiteUrl) console.log(`  ${chalk.cyan('Website:')} ${org.websiteUrl}`);
+  if (org.description) console.log(`  ${chalk.gray('About:')} ${org.description.substring(0, 120)}${org.description.length > 120 ? '...' : ''}`);
+  if (org._count?.contacts != null) console.log(`  ${chalk.green('Contacts:')} ${org._count.contacts}`);
+  console.log();
+}
+
+export function outputOrganizationsJson(organizations: Organization[], nextCursor?: string): void {
+  console.log(JSON.stringify({
+    organizations: organizations.map(transformOrganization),
+    total: organizations.length,
+    nextCursor: nextCursor ?? null,
+  }, null, 2));
+}
+
+export function outputOrganizationsPretty(organizations: Organization[]): void {
+  if (organizations.length === 0) {
+    console.log(chalk.gray('No organizations found.'));
+    return;
+  }
+  console.log(chalk.bold(`\nOrganizations (${organizations.length} total)`));
+  console.log(chalk.gray('─'.repeat(50)));
+  for (const org of organizations) {
+    console.log(`\n${chalk.bold(org.name)}`);
+    console.log(chalk.gray(`  ID: ${org.id}`));
+    if (org.industry) console.log(`  ${chalk.magenta('Industry:')} ${org.industry}`);
+    if (org._count?.contacts != null) console.log(`  ${chalk.green('Contacts:')} ${org._count.contacts}`);
+  }
   console.log();
 }
 
