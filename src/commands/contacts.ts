@@ -112,6 +112,7 @@ export function createContactsCommand(): Command {
     .option('--skills <skills>', 'Skills (comma-separated)')
     .option('--tags <tags>', 'Tags (comma-separated)')
     .option('--organization <id>', 'Organization ID')
+    .option('--organization-name <name>', 'Organization name (find-or-create; ignored if --organization is set)')
     .action(async (options: {
       workspace: string;
       firstName?: string;
@@ -128,6 +129,7 @@ export function createContactsCommand(): Command {
       skills?: string;
       tags?: string;
       organization?: string;
+      organizationName?: string;
     }, cmd: Command) => {
       const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
       const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
@@ -150,6 +152,7 @@ export function createContactsCommand(): Command {
           skills: options.skills?.split(',').map(s => s.trim()),
           tags: options.tags?.split(',').map(t => t.trim()),
           organizationId: options.organization,
+          organizationName: options.organizationName,
         });
 
         if (useJson) {
@@ -181,6 +184,7 @@ export function createContactsCommand(): Command {
     .option('--skills <skills>', 'Skills (comma-separated)')
     .option('--tags <tags>', 'Tags (comma-separated)')
     .option('--organization <id>', 'Organization ID (use "null" to clear)')
+    .option('--organization-name <name>', 'Organization name (find-or-create; ignored if --organization is set)')
     .action(async (options: {
       id: string;
       firstName?: string;
@@ -197,6 +201,7 @@ export function createContactsCommand(): Command {
       skills?: string;
       tags?: string;
       organization?: string;
+      organizationName?: string;
     }, cmd: Command) => {
       const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
       const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
@@ -221,6 +226,7 @@ export function createContactsCommand(): Command {
           skills: options.skills?.split(',').map(s => s.trim()),
           tags: options.tags?.split(',').map(t => t.trim()),
           organizationId: nullable(options.organization),
+          organizationName: options.organizationName,
         });
 
         if (useJson) {
