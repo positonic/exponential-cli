@@ -308,5 +308,31 @@ export function createContactsCommand(): Command {
       }
     });
 
+  contacts
+    .command('enrich')
+    .description('Queue a web-search enrichment job for an existing contact (runs regardless of the workspace auto-enrich setting)')
+    .argument('<id>', 'Contact ID')
+    .action(async (id: string, _options: Record<string, never>, cmd: Command) => {
+      const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+      const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+
+      try {
+        const client = getClient();
+        const result = await client.contacts.enrich(id);
+
+        if (useJson) {
+          console.log(JSON.stringify(result, null, 2));
+        } else if (result.enqueued) {
+          console.log(`\n✓ Enrichment queued for contact ${id} (job ${result.enrichmentId})`);
+        } else if (result.reason === 'already-in-flight') {
+          console.log(`\n• Enrichment already in progress for contact ${id} (job ${result.enrichmentId})`);
+        } else {
+          console.log(`\n• Not queued for contact ${id}${result.reason ? ` (${result.reason})` : ''}`);
+        }
+      } catch (error) {
+        handleError(error, useJson);
+      }
+    });
+
   return contacts;
 }
