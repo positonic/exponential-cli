@@ -6,6 +6,7 @@ import { resolveProductId, resolveWorkspaceId } from '../utils/resolve.js';
 import { createStoriesCommand } from './stories.js';
 import { createScopesCommand } from './scopes.js';
 import { createRequirementsCommand } from './requirements.js';
+import { createAreasCommand } from './areas.js';
 import {
   shouldUseJson,
   outputFeaturesJson,
@@ -254,6 +255,7 @@ export function createFeaturesCommand(): Command {
   features.addCommand(createStoriesCommand());
   features.addCommand(createScopesCommand());
   features.addCommand(createRequirementsCommand());
+  features.addCommand(createAreasCommand());
 
   return features;
 }
