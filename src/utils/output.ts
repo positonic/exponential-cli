@@ -9,6 +9,8 @@ import type {
   Deal,
   Epic,
   Feature,
+  FeatureScope,
+  KnowledgePage,
   Organization,
   Pipeline,
   PipelineStage,
@@ -16,6 +18,7 @@ import type {
   Project,
   ProjectOutput,
   ProjectsListOutput,
+  Requirement,
   Ticket,
   TicketComment,
   TicketDetail,
@@ -1069,6 +1072,151 @@ export function outputStagesPretty(stages: PipelineStage[]): void {
   for (const stage of stages) {
     const count = stage._count?.deals != null ? chalk.gray(` (${stage._count.deals} deals)`) : '';
     console.log(`  ${chalk.bold(stage.name)}${count} — ${chalk.gray(stage.type)}`);
+  }
+  console.log();
+}
+
+// ---------------------------------------------------------------------------
+// Knowledge pages
+// ---------------------------------------------------------------------------
+
+export function outputPageJson(page: KnowledgePage): void {
+  console.log(JSON.stringify(page, null, 2));
+}
+
+export function outputPagePretty(page: KnowledgePage): void {
+  console.log(chalk.gray('─'.repeat(50)));
+  console.log(`\n${chalk.bold(page.title)}`);
+  console.log(chalk.gray(`  ID: ${page.id}`));
+  if (page.project) {
+    console.log(`  ${chalk.gray('Project:')} ${page.project.name}`);
+  }
+  if (page.body) {
+    console.log(`\n${page.body}\n`);
+  }
+}
+
+export function outputPagesJson(pages: KnowledgePage[]): void {
+  console.log(JSON.stringify({ pages, total: pages.length }, null, 2));
+}
+
+export function outputPagesPretty(pages: KnowledgePage[]): void {
+  if (pages.length === 0) {
+    console.log(chalk.gray('No pages found.'));
+    return;
+  }
+  console.log(chalk.bold(`\nPages (${pages.length} total)`));
+  console.log(chalk.gray('─'.repeat(50)));
+  for (const p of pages) {
+    console.log(`  ${chalk.bold(p.title)}`);
+    console.log(chalk.gray(`    ID: ${p.id}`));
+  }
+  console.log();
+}
+
+// ---------------------------------------------------------------------------
+// Requirements (EARS)
+// ---------------------------------------------------------------------------
+
+export function outputRequirementJson(requirement: Requirement): void {
+  console.log(JSON.stringify(requirement, null, 2));
+}
+
+export function outputRequirementPretty(requirement: Requirement): void {
+  const met = requirement.checkedAt
+    ? chalk.green('[met]')
+    : chalk.gray('[unmet]');
+  const kind = requirement.kind ? chalk.gray(` (${requirement.kind})`) : '';
+  console.log(`  ${met} ${requirement.statement}${kind}`);
+  console.log(chalk.gray(`    ID: ${requirement.id}`));
+}
+
+export function outputRequirementsJson(requirements: Requirement[]): void {
+  console.log(JSON.stringify({ requirements, total: requirements.length }, null, 2));
+}
+
+export function outputRequirementsPretty(requirements: Requirement[]): void {
+  if (requirements.length === 0) {
+    console.log(chalk.gray('No requirements found.'));
+    return;
+  }
+  const metCount = requirements.filter((r) => r.checkedAt).length;
+  console.log(chalk.bold(`\nRequirements (${metCount}/${requirements.length} met)`));
+  console.log(chalk.gray('─'.repeat(50)));
+  for (const r of requirements) {
+    outputRequirementPretty(r);
+  }
+  console.log();
+}
+
+export interface BatchRequirementResult {
+  index: number;
+  success: boolean;
+  requirement?: Requirement;
+  error?: string;
+}
+
+export function outputRequirementBatchJson(results: BatchRequirementResult[]): void {
+  console.log(JSON.stringify({
+    results,
+    total: results.length,
+    succeeded: results.filter((r) => r.success).length,
+    failed: results.filter((r) => !r.success).length,
+  }, null, 2));
+}
+
+export function outputRequirementBatchPretty(results: BatchRequirementResult[]): void {
+  for (const r of results) {
+    if (r.success) {
+      console.log(`  ${chalk.green('✓')} #${r.index}: ${r.requirement?.statement ?? ''}`);
+    } else {
+      console.log(`  ${chalk.red('✗')} #${r.index}: ${r.error ?? 'failed'}`);
+    }
+  }
+  const ok = results.filter((r) => r.success).length;
+  console.log(chalk.bold(`\n${ok}/${results.length} requirements added`));
+}
+
+// ---------------------------------------------------------------------------
+// Feature scopes
+// ---------------------------------------------------------------------------
+
+function getScopeStatusColor(status: string): 'gray' | 'blue' | 'yellow' | 'green' | 'red' {
+  switch (status) {
+    case 'PLANNED': return 'blue';
+    case 'IN_PROGRESS': return 'yellow';
+    case 'SHIPPED': return 'green';
+    case 'DEPRECATED': return 'red';
+    default: return 'gray';
+  }
+}
+
+export function outputScopeJson(scope: FeatureScope): void {
+  console.log(JSON.stringify(scope, null, 2));
+}
+
+export function outputScopePretty(scope: FeatureScope): void {
+  const badge = chalk[getScopeStatusColor(scope.status)](`[${scope.status}]`);
+  console.log(`  ${badge} ${chalk.bold(scope.version)}`);
+  console.log(chalk.gray(`    ID: ${scope.id}`));
+  if (scope.description) {
+    console.log(`    ${scope.description.substring(0, 120)}${scope.description.length > 120 ? '...' : ''}`);
+  }
+}
+
+export function outputScopesJson(scopes: FeatureScope[]): void {
+  console.log(JSON.stringify({ scopes, total: scopes.length }, null, 2));
+}
+
+export function outputScopesPretty(scopes: FeatureScope[]): void {
+  if (scopes.length === 0) {
+    console.log(chalk.gray('No scopes found.'));
+    return;
+  }
+  console.log(chalk.bold(`\nScopes (${scopes.length} total)`));
+  console.log(chalk.gray('─'.repeat(50)));
+  for (const s of scopes) {
+    outputScopePretty(s);
   }
   console.log();
 }
