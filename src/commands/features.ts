@@ -4,6 +4,9 @@ import { getClient } from '../client/index.js';
 import { handleError } from '../utils/errors.js';
 import { resolveProductId, resolveWorkspaceId } from '../utils/resolve.js';
 import { createStoriesCommand } from './stories.js';
+import { createScopesCommand } from './scopes.js';
+import { createRequirementsCommand } from './requirements.js';
+import { createAreasCommand } from './areas.js';
 import {
   shouldUseJson,
   outputFeaturesJson,
@@ -22,6 +25,7 @@ const FEATURE_STATUSES: FeatureStatus[] = [
   'DEFINED',
   'IN_PROGRESS',
   'SHIPPED',
+  'DEPRECATED',
   'ARCHIVED',
 ];
 
@@ -97,6 +101,7 @@ export function createFeaturesCommand(): Command {
     .option('--status <status>', `Status: ${FEATURE_STATUSES.join(', ')}`)
     .option('--priority <n>', 'Priority 0-4 (lower = higher)', parseInt)
     .option('--effort <n>', 'Effort estimate', parseFloat)
+    .option('--area <id>', 'Area CUID (per-product bucket) to file the feature under')
     .option('--workspace <slug|id>', 'Workspace (required when --product is a slug)')
     .action(
       async (
@@ -108,6 +113,7 @@ export function createFeaturesCommand(): Command {
           status?: string;
           priority?: number;
           effort?: number;
+          area?: string;
           workspace?: string;
         },
         cmd: Command,
@@ -131,6 +137,7 @@ export function createFeaturesCommand(): Command {
             status,
             priority: options.priority,
             effort: options.effort,
+            areaId: options.area,
           });
           if (useJson) outputFeatureJson(feature);
           else {
@@ -153,6 +160,7 @@ export function createFeaturesCommand(): Command {
     .option('--status <status>', `Status: ${FEATURE_STATUSES.join(', ')}`)
     .option('--priority <n>', 'Priority 0-4', parseInt)
     .option('--effort <n>', 'Effort estimate', parseFloat)
+    .option('--area <id>', 'Area CUID ("none" to clear)')
     .action(
       async (
         options: {
@@ -163,6 +171,7 @@ export function createFeaturesCommand(): Command {
           status?: string;
           priority?: number;
           effort?: number;
+          area?: string;
         },
         cmd: Command,
       ) => {
@@ -179,6 +188,7 @@ export function createFeaturesCommand(): Command {
             status,
             priority: options.priority,
             effort: options.effort,
+            areaId: options.area === 'none' ? null : options.area,
           });
           if (useJson) outputFeatureJson(feature);
           else {
@@ -191,7 +201,61 @@ export function createFeaturesCommand(): Command {
       },
     );
 
+  features
+    .command('link-page')
+    .description('Link a Knowledge page (PRD, spec, research) to a feature')
+    .requiredOption('--feature <id>', 'Feature CUID')
+    .requiredOption('--page <id>', 'Page CUID')
+    .option('--scope <id>', 'Feature scope CUID to pin the page to')
+    .action(
+      async (
+        options: { feature: string; page: string; scope?: string },
+        cmd: Command,
+      ) => {
+        const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+        const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+        try {
+          const client = getClient();
+          const link = await client.features.linkPage({
+            featureId: options.feature,
+            pageId: options.page,
+            scopeId: options.scope,
+          });
+          if (useJson) console.log(JSON.stringify(link, null, 2));
+          else console.log('\n✓ Page linked');
+        } catch (error) {
+          handleError(error, useJson);
+        }
+      },
+    );
+
+  features
+    .command('unlink-page')
+    .description('Unlink a Knowledge page from a feature')
+    .requiredOption('--feature <id>', 'Feature CUID')
+    .requiredOption('--page <id>', 'Page CUID')
+    .action(
+      async (options: { feature: string; page: string }, cmd: Command) => {
+        const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+        const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+        try {
+          const client = getClient();
+          const result = await client.features.unlinkPage(
+            options.feature,
+            options.page,
+          );
+          if (useJson) console.log(JSON.stringify(result, null, 2));
+          else console.log('\n✓ Page unlinked');
+        } catch (error) {
+          handleError(error, useJson);
+        }
+      },
+    );
+
   features.addCommand(createStoriesCommand());
+  features.addCommand(createScopesCommand());
+  features.addCommand(createRequirementsCommand());
+  features.addCommand(createAreasCommand());
 
   return features;
 }

@@ -221,6 +221,7 @@ export function createTicketsCommand(): Command {
     .option('--priority <n>', 'Priority 0-4 (lower = higher)', parseInt)
     .option('--points <n>', 'Story points', parseFloat)
     .option('--feature <id>', 'Feature CUID to attach to')
+    .option('--scope <id>', 'Feature scope CUID to attach to (requires --feature)')
     .option('--epic <id>', 'Epic CUID to attach to')
     .option('--assignee <id>', 'Assignee user ID')
     .option('--branch <name>', 'Branch name')
@@ -243,6 +244,7 @@ export function createTicketsCommand(): Command {
           priority?: number;
           points?: number;
           feature?: string;
+          scope?: string;
           epic?: string;
           assignee?: string;
           branch?: string;
@@ -273,6 +275,7 @@ export function createTicketsCommand(): Command {
             priority: options.priority,
             points: options.points,
             featureId: options.feature,
+            scopeId: options.scope,
             epicId: options.epic,
             assigneeId: options.assignee,
             branchName: options.branch,
