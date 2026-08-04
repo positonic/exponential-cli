@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import type { FeatureStatus } from 'exponential-sdk';
+import type { FeatureStatus, Ticket } from 'exponential-sdk';
 import { getClient } from '../client/index.js';
 import { handleError } from '../utils/errors.js';
 import { resolveProductId, resolveWorkspaceId } from '../utils/resolve.js';
@@ -28,6 +28,26 @@ const FEATURE_STATUSES: FeatureStatus[] = [
   'DEPRECATED',
   'ARCHIVED',
 ];
+
+interface TicketSummary {
+  id: string;
+  shortId: string | null;
+  number: number | null;
+  title: string;
+}
+
+function summarizeTicket(ticket: Ticket): TicketSummary {
+  return {
+    id: ticket.id,
+    shortId: ticket.shortId ?? null,
+    number: ticket.number ?? null,
+    title: ticket.title,
+  };
+}
+
+function ticketLabel(ticket: Ticket): string {
+  return ticket.shortId ?? (ticket.number != null ? `#${ticket.number}` : ticket.id);
+}
 
 function validateFeatureStatus(value: string | undefined): FeatureStatus | undefined {
   if (!value) return undefined;
@@ -194,6 +214,146 @@ export function createFeaturesCommand(): Command {
           else {
             console.log('\n✓ Feature updated');
             outputFeaturePretty(feature);
+          }
+        } catch (error) {
+          handleError(error, useJson);
+        }
+      },
+    );
+
+  features
+    .command('delete <id>')
+    .description(
+      "Delete a feature. Refuses if it still has tickets — deleting a feature does not " +
+        'delete its tickets, it unlinks them (Ticket.featureId is SetNull), silently ' +
+        'orphaning them in the product backlog.',
+    )
+    .option(
+      '--with-tickets',
+      "Delete the feature's tickets first, then the feature (destructive)",
+    )
+    .option(
+      '--orphan-tickets',
+      'Delete the feature anyway, leaving its tickets in the backlog unlinked',
+    )
+    .action(
+      async (
+        id: string,
+        options: { withTickets?: boolean; orphanTickets?: boolean },
+        cmd: Command,
+      ) => {
+        const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+        const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+        try {
+          if (options.withTickets && options.orphanTickets) {
+            throw new Error(
+              '--with-tickets and --orphan-tickets are mutually exclusive',
+            );
+          }
+          const client = getClient();
+          const feature = await client.features.get(id);
+
+          // `features get` returns `_count.tickets`; trust a zero count and skip
+          // the extra round trip. Otherwise fetch the tickets themselves — they
+          // are needed both to report and (with --with-tickets) to delete.
+          const tickets =
+            feature._count?.tickets === 0
+              ? []
+              : await client.tickets.list({
+                  productId: feature.productId,
+                  featureId: feature.id,
+                });
+
+          if (tickets.length > 0 && !options.withTickets && !options.orphanTickets) {
+            const reason = `has ${tickets.length} ticket${tickets.length === 1 ? '' : 's'}`;
+            if (useJson) {
+              console.log(
+                JSON.stringify(
+                  {
+                    deleted: false,
+                    id: feature.id,
+                    reason,
+                    tickets: tickets.map(summarizeTicket),
+                  },
+                  null,
+                  2,
+                ),
+              );
+            } else {
+              console.error(
+                `\nRefusing to delete "${feature.name}": it ${reason}.\n` +
+                  'Deleting the feature would leave them unlinked in the product backlog.\n' +
+                  '  --with-tickets    delete those tickets first, then the feature\n' +
+                  '  --orphan-tickets  delete the feature anyway and unlink them',
+              );
+              for (const t of tickets) {
+                console.error(`  - ${ticketLabel(t)} ${t.title}`);
+              }
+            }
+            process.exitCode = 1;
+            return;
+          }
+
+          const ticketsDeleted: TicketSummary[] = [];
+          const ticketsFailed: (TicketSummary & { error: string })[] = [];
+          if (options.withTickets) {
+            for (const ticket of tickets) {
+              try {
+                await client.tickets.delete(ticket.id);
+                ticketsDeleted.push(summarizeTicket(ticket));
+              } catch (error) {
+                ticketsFailed.push({
+                  ...summarizeTicket(ticket),
+                  error: error instanceof Error ? error.message : String(error),
+                });
+              }
+            }
+          }
+
+          // Never delete the feature after a partial ticket sweep — the survivors
+          // would be orphaned, which is exactly what --with-tickets promises to avoid.
+          if (ticketsFailed.length > 0) {
+            const reason = `failed to delete ${ticketsFailed.length} of ${tickets.length} tickets`;
+            if (useJson) {
+              console.log(
+                JSON.stringify(
+                  { deleted: false, id: feature.id, reason, ticketsDeleted, ticketsFailed },
+                  null,
+                  2,
+                ),
+              );
+            } else {
+              console.error(`\nAborted: ${reason}. Feature "${feature.name}" was NOT deleted.`);
+              for (const t of ticketsFailed) {
+                console.error(`  - ${t.shortId ?? t.id}: ${t.error}`);
+              }
+            }
+            process.exitCode = 1;
+            return;
+          }
+
+          await client.features.delete(feature.id);
+
+          const ticketsOrphaned = options.orphanTickets
+            ? tickets.map(summarizeTicket)
+            : [];
+
+          if (useJson) {
+            console.log(
+              JSON.stringify(
+                { deleted: true, id: feature.id, ticketsDeleted, ticketsOrphaned },
+                null,
+                2,
+              ),
+            );
+          } else {
+            console.log('\n✓ Feature deleted');
+            if (ticketsDeleted.length > 0) {
+              console.log(`  ${ticketsDeleted.length} ticket(s) deleted with it`);
+            }
+            if (ticketsOrphaned.length > 0) {
+              console.log(`  ${ticketsOrphaned.length} ticket(s) left unlinked in the backlog`);
+            }
           }
         } catch (error) {
           handleError(error, useJson);
