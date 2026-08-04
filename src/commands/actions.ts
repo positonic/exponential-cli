@@ -11,6 +11,10 @@ import {
   outputCommentPretty,
   outputCommentsJson,
   outputCommentsPretty,
+  outputTodaysActionsJson,
+  outputTodaysActionsPretty,
+  outputOverdueTriageJson,
+  outputOverdueTriagePretty,
 } from '../utils/output.js';
 import type { Action, KanbanStatus, Priority } from 'exponential-sdk';
 
@@ -33,6 +37,25 @@ const VALID_PRIORITIES: Priority[] = [
   'Watch',
   'Someday Maybe',
 ];
+
+/** `undefined` = leave alone, `null` = clear, otherwise the parsed date. */
+function parseNullableDate(raw: string | undefined, flag: string): Date | null | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === 'null') return null;
+  const parsed = new Date(raw);
+  if (isNaN(parsed.getTime())) {
+    throw new Error(`Invalid --${flag} value "${raw}". Use YYYY-MM-DD, an ISO datetime, or "null".`);
+  }
+  return parsed;
+}
+
+function parseIds(raw: string): string[] {
+  const ids = raw.split(',').map((s) => s.trim()).filter(Boolean);
+  if (ids.length === 0) {
+    throw new Error('No action IDs supplied. Pass --ids id1,id2');
+  }
+  return ids;
+}
 
 export function createActionsCommand(): Command {
   const actions = new Command('actions')
@@ -73,7 +96,40 @@ export function createActionsCommand(): Command {
 
   actions
     .command('today')
-    .description('Get actions due today')
+    .description("What's on your plate: overdue, today, and inbox")
+    .option('--workspace <id>', 'Filter by workspace ID')
+    .option('--due-only', 'Only actions whose dueDate is today (the pre-1.8 shape — excludes overdue)')
+    .action(async (options: { workspace?: string; dueOnly?: boolean }, cmd: Command) => {
+      const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+      const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+
+      try {
+        const client = getClient();
+
+        if (options.dueOnly) {
+          const actions = await client.actions.getToday(options.workspace);
+          if (useJson) {
+            outputActionsJson(actions, { workspaceId: options.workspace });
+          } else {
+            outputActionsPretty(actions);
+          }
+          return;
+        }
+
+        const todays = await client.actions.getTodaysActions(options.workspace);
+        if (useJson) {
+          outputTodaysActionsJson(todays, { workspaceId: options.workspace });
+        } else {
+          outputTodaysActionsPretty(todays);
+        }
+      } catch (error) {
+        handleError(error, useJson);
+      }
+    });
+
+  actions
+    .command('overdue')
+    .description('Why the overdue pile is that size: bulk-created cohorts vs real debt')
     .option('--workspace <id>', 'Filter by workspace ID')
     .action(async (options: { workspace?: string }, cmd: Command) => {
       const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
@@ -81,12 +137,64 @@ export function createActionsCommand(): Command {
 
       try {
         const client = getClient();
-        const actions = await client.actions.getToday(options.workspace);
+        const triage = await client.actions.getOverdueTriage(options.workspace);
 
         if (useJson) {
-          outputActionsJson(actions, { workspaceId: options.workspace });
+          outputOverdueTriageJson(triage);
         } else {
-          outputActionsPretty(actions);
+          outputOverdueTriagePretty(triage);
+        }
+      } catch (error) {
+        handleError(error, useJson);
+      }
+    });
+
+  actions
+    .command('defer')
+    .description('Amnesty: clear dates so actions fall back to their project backlog untimed')
+    .requiredOption('--ids <ids>', 'Comma-separated action IDs')
+    .action(async (options: { ids: string }, cmd: Command) => {
+      const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+      const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+
+      try {
+        const ids = parseIds(options.ids);
+        const client = getClient();
+        const result = await client.actions.bulkDefer(ids);
+
+        if (useJson) {
+          console.log(JSON.stringify(result, null, 2));
+        } else {
+          console.log(`✓ ${result.message}`);
+        }
+      } catch (error) {
+        handleError(error, useJson);
+      }
+    });
+
+  actions
+    .command('reschedule')
+    .description('Move actions to a new do-date (use "actions defer" if they were never really due)')
+    .requiredOption('--ids <ids>', 'Comma-separated action IDs')
+    .requiredOption('--to <date>', 'New do-date (YYYY-MM-DD, or "today")')
+    .action(async (options: { ids: string; to: string }, cmd: Command) => {
+      const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+      const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+
+      try {
+        const ids = parseIds(options.ids);
+        const when = options.to === 'today' ? new Date() : new Date(options.to);
+        if (isNaN(when.getTime())) {
+          throw new Error('Invalid date format. Use YYYY-MM-DD or "today"');
+        }
+
+        const client = getClient();
+        const result = await client.actions.bulkReschedule(ids, when);
+
+        if (useJson) {
+          console.log(JSON.stringify(result, null, 2));
+        } else {
+          console.log(`✓ Rescheduled ${result.count} action${result.count === 1 ? '' : 's'}`);
         }
       } catch (error) {
         handleError(error, useJson);
@@ -168,6 +276,8 @@ export function createActionsCommand(): Command {
     .option('--status <status>', 'Status (ACTIVE, COMPLETED, CANCELLED)')
     .option('--kanban <status>', 'Kanban status (BACKLOG, TODO, IN_PROGRESS, IN_REVIEW, DONE)')
     .option('--due <date>', 'Due date (YYYY-MM-DD or "null" to clear)')
+    .option('--scheduled-start <datetime>', 'Do-date: when you plan to work on it (YYYY-MM-DD, ISO datetime, or "null" to clear). This is what /today partitions on.')
+    .option('--scheduled-end <datetime>', 'End of the time block (YYYY-MM-DD, ISO datetime, or "null" to clear)')
     .action(async (options: {
       id: string;
       name?: string;
@@ -177,6 +287,8 @@ export function createActionsCommand(): Command {
       status?: string;
       kanban?: string;
       due?: string;
+      scheduledStart?: string;
+      scheduledEnd?: string;
     }, cmd: Command) => {
       const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
       const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
@@ -198,6 +310,9 @@ export function createActionsCommand(): Command {
           }
         }
 
+        const scheduledStart = parseNullableDate(options.scheduledStart, 'scheduled-start');
+        const scheduledEnd = parseNullableDate(options.scheduledEnd, 'scheduled-end');
+
         const client = getClient();
         const action = await client.actions.update({
           id: options.id,
@@ -208,6 +323,8 @@ export function createActionsCommand(): Command {
           status: options.status as 'ACTIVE' | 'COMPLETED' | 'CANCELLED' | undefined,
           kanbanStatus: options.kanban as 'BACKLOG' | 'TODO' | 'IN_PROGRESS' | 'IN_REVIEW' | 'DONE' | 'CANCELLED' | undefined,
           dueDate,
+          scheduledStart,
+          scheduledEnd,
         });
 
         if (useJson) {

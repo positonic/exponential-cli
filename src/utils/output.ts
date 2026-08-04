@@ -12,6 +12,7 @@ import type {
   FeatureScope,
   KnowledgePage,
   Organization,
+  OverdueTriage,
   Pipeline,
   PipelineStage,
   Product,
@@ -20,6 +21,7 @@ import type {
   ProjectsListOutput,
   Requirement,
   Ticket,
+  TodaysActions,
   TicketComment,
   TicketDetail,
   UserStory,
@@ -170,6 +172,100 @@ export function outputActionsPretty(actions: Action[]): void {
 
     if (action.description) {
       console.log(`  ${chalk.gray('Description:')} ${action.description.substring(0, 100)}${action.description.length > 100 ? '...' : ''}`);
+    }
+  }
+  console.log();
+}
+
+// ─── Today's actions (the /today partition) ────────────────
+
+export function outputTodaysActionsJson(t: TodaysActions, filters: Record<string, unknown> = {}): void {
+  console.log(JSON.stringify({
+    overdue: { count: t.overdue.count, actions: t.overdue.actions },
+    today: { count: t.today.count, actions: t.today.actions },
+    inbox: { count: t.inbox.count, actions: t.inbox.actions },
+    total: t.overdue.count + t.today.count + t.inbox.count,
+    filters,
+  }, null, 2));
+}
+
+function printTodayGroup(label: string, group: TodaysActions['overdue'], color: 'red' | 'green' | 'gray'): void {
+  if (group.count === 0) return;
+  const truncated = group.count > group.actions.length
+    ? chalk.gray(` (showing ${group.actions.length})`)
+    : '';
+  console.log(`\n${chalk[color].bold(`${label} (${group.count})`)}${truncated}`);
+  for (const a of group.actions) {
+    const when = a.scheduledStart ?? a.dueDate;
+    const stamp = when ? chalk.gray(formatDate(new Date(when))) : '';
+    const project = a.projectName ? chalk.cyan(` [${a.projectName}]`) : '';
+    console.log(`  ${a.name}${project} ${stamp}`);
+    console.log(chalk.gray(`    ID: ${a.id}`));
+  }
+}
+
+export function outputTodaysActionsPretty(t: TodaysActions): void {
+  const total = t.overdue.count + t.today.count + t.inbox.count;
+  if (total === 0) {
+    console.log(chalk.gray('Nothing on your plate.'));
+    return;
+  }
+  console.log(chalk.bold('\nOn your plate'));
+  console.log(chalk.gray('─'.repeat(50)));
+  printTodayGroup('Overdue', t.overdue, 'red');
+  printTodayGroup('Today', t.today, 'green');
+  printTodayGroup('Inbox', t.inbox, 'gray');
+  if (t.overdue.count > 0) {
+    console.log(chalk.gray(`\nRun "exponential actions overdue" to see why the overdue pile is that size.`));
+  }
+  console.log();
+}
+
+// ─── Overdue triage ────────────────────────────────────────
+
+export function outputOverdueTriageJson(t: OverdueTriage): void {
+  console.log(JSON.stringify(t, null, 2));
+}
+
+export function outputOverdueTriagePretty(t: OverdueTriage): void {
+  if (t.totalOverdue === 0) {
+    console.log(chalk.green('Nothing overdue.'));
+    return;
+  }
+
+  console.log(chalk.bold(`\nOverdue: ${t.totalOverdue}`));
+  console.log(chalk.gray('─'.repeat(50)));
+
+  if (t.cohorts.length > 0) {
+    console.log(
+      `\n${chalk.yellow.bold(`${t.cohortCount} of these were bulk-created`)} ${chalk.gray('— stamped with one identical timestamp, so almost certainly never individually due.')}`,
+    );
+    for (const c of t.cohorts) {
+      console.log(
+        `\n  ${chalk.bold(`${c.count} actions`)} stamped ${chalk.gray(c.stampedAt.toISOString())} ${chalk.red(`(${c.daysOverdue}d overdue)`)}`,
+      );
+      if (c.projectNames.length > 0) {
+        console.log(`    ${chalk.cyan('Projects:')} ${c.projectNames.join(', ')}`);
+      }
+      for (const a of c.actions.slice(0, 4)) {
+        console.log(chalk.gray(`      · ${a.name.substring(0, 62)}`));
+      }
+      if (c.actions.length > 4) {
+        console.log(chalk.gray(`      · … and ${c.actions.length - 4} more`));
+      }
+      console.log(
+        chalk.gray(`    Amnesty: `) +
+          `exponential actions defer --ids ${c.actionIds.slice(0, 2).join(',')}${c.actionIds.length > 2 ? ',…' : ''}`,
+      );
+    }
+  }
+
+  if (t.loose.length > 0) {
+    console.log(`\n${chalk.bold(`${t.loose.length} individually dated`)} ${chalk.gray('— real debt, oldest first.')}`);
+    for (const a of t.loose) {
+      const project = a.projectName ? chalk.cyan(` [${a.projectName}]`) : '';
+      console.log(`  ${chalk.red(`${String(a.daysOverdue).padStart(3)}d`)}  ${a.name.substring(0, 62)}${project}`);
+      console.log(chalk.gray(`        ID: ${a.id}`));
     }
   }
   console.log();

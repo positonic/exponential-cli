@@ -70,8 +70,16 @@ exponential actions create -n "Task name" -d "Description" -p <project-id> --pri
 exponential actions update --id <action-id> --kanban DONE
 exponential actions update --id <action-id> -n "New name" --priority "2nd Priority" --due 2026-03-15
 
-# Get today's actions
+# Set the do-date (when you plan to work on it). This is what `today` partitions on,
+# and it takes precedence over --due.
+exponential actions update --id <action-id> --scheduled-start 2026-08-05T09:00
+exponential actions update --id <action-id> --scheduled-start null   # clear it
+
+# What's actually on your plate: overdue + today + inbox
 exponential actions today
+
+# Just the actions whose dueDate is today (excludes overdue — see note below)
+exponential actions today --due-only
 
 # Get actions in a date range
 exponential actions range --start 2024-01-01 --end 2024-01-31
@@ -79,6 +87,48 @@ exponential actions range --start 2024-01-01 --end 2024-01-31
 # Get kanban board view
 exponential actions kanban --project <project-id>
 ```
+
+#### Triaging an overdue pile
+
+A large overdue count is usually not a large number of missed commitments — it's
+a few bulk writes (a generated project plan, an import) that stamped every row
+with one identical timestamp. `actions overdue` separates the two:
+
+```bash
+exponential actions overdue
+```
+
+```
+Overdue: 43
+
+21 of these were bulk-created — stamped with one identical timestamp,
+so almost certainly never individually due.
+
+  17 actions stamped 2026-07-25T08:29:55.483Z (10d overdue)
+    Projects: Entity Money Map, Net Worth Baseline, Tax Reserve System, …
+    Amnesty: exponential actions defer --ids cmqcgvtlh…,cmqcgvtnn…,…
+
+19 individually dated — real debt, oldest first.
+   12d  Send out the job description for the data engineering role [Hiring]
+```
+
+Then pick a disposition:
+
+```bash
+# Amnesty: clear the dates, back to the project backlog untimed.
+# For work that was never really due on the date it carries.
+exponential actions defer --ids id1,id2,id3
+
+# Reschedule: still due, just later.
+exponential actions reschedule --ids id1,id2 --to today
+exponential actions reschedule --ids id1,id2 --to 2026-08-10
+```
+
+> **Note on `actions today`:** as of v1.9.0 this returns the same
+> overdue/today/inbox partition the `/today` page renders, rather than a
+> due-date-only list. The old behaviour silently omitted the overdue pile — it
+> would report 6 actions while 43 sat overdue. Pass `--due-only` for the
+> previous output shape.
 
 ### Projects
 
