@@ -14,6 +14,7 @@ import { createProjectsCommand } from './commands/projects.js';
 import { createSearchCommand } from './commands/search.js';
 import { createTicketsCommand } from './commands/tickets.js';
 import { createWorkspacesCommand } from './commands/workspaces.js';
+import { createGoalsCommand } from './commands/goals.js';
 
 const program = new Command();
 
@@ -47,5 +48,6 @@ program.addCommand(createProjectsCommand());
 program.addCommand(createSearchCommand());
 program.addCommand(createTicketsCommand());
 program.addCommand(createWorkspacesCommand());
+program.addCommand(createGoalsCommand());
 
 program.parse();

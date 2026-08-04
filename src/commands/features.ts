@@ -7,6 +7,7 @@ import { createStoriesCommand } from './stories.js';
 import { createScopesCommand } from './scopes.js';
 import { createRequirementsCommand } from './requirements.js';
 import { createAreasCommand } from './areas.js';
+import { createFeatureCommentsCommand } from './featureComments.js';
 import {
   shouldUseJson,
   outputFeaturesJson,
@@ -416,6 +417,7 @@ export function createFeaturesCommand(): Command {
   features.addCommand(createScopesCommand());
   features.addCommand(createRequirementsCommand());
   features.addCommand(createAreasCommand());
+  features.addCommand(createFeatureCommentsCommand());
 
   return features;
 }

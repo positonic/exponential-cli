@@ -21,6 +21,9 @@ import type {
   Requirement,
   Ticket,
   TicketComment,
+  GoalComment,
+  FeatureComment,
+  PageComment,
   TicketDetail,
   UserStory,
   Workspace,
@@ -543,20 +546,76 @@ export function outputStagesJson(stages: PipelineStage[]): void {
 
 // ─── Comment output ────────────────────────────────────────
 
-type AnyComment = ActionComment | TicketComment;
+// Two comment shapes exist server-side and both reach the CLI: actions,
+// tickets and goals use `{ authorId, content, author }`; features and pages use
+// `{ createdById, body, createdBy }`. Rather than teach every caller which is
+// which, normalize once here — output is identical either way.
+type AnyComment =
+  | ActionComment
+  | TicketComment
+  | GoalComment
+  | FeatureComment
+  | PageComment;
 
-function transformComment(comment: AnyComment): Record<string, unknown> {
-  const parentKey = 'actionId' in comment ? 'actionId' : 'ticketId';
-  const parentId = (comment as unknown as Record<string, unknown>)[parentKey];
+const COMMENT_PARENT_KEYS = ['actionId', 'ticketId', 'goalId', 'featureId', 'pageId'] as const;
+
+interface NormalizedComment {
+  id: string;
+  parentKey: string;
+  parentId: unknown;
+  authorId: string;
+  author: { id: string; name: string | null } | null;
+  content: string;
+  createdAt: Date;
+  updatedAt: Date;
+  /** Feature comments only: set when the comment is a reply. */
+  parentCommentId?: string | null;
+  /** Feature comments only: the anchored thread, when there is one. */
+  threadId?: string | null;
+  resolvedAt?: Date | null;
+}
+
+function normalizeComment(comment: AnyComment): NormalizedComment {
+  const raw = comment as unknown as Record<string, unknown>;
+  const parentKey = COMMENT_PARENT_KEYS.find((k) => k in raw) ?? 'parentId';
+  const author = (raw.author ?? raw.createdBy ?? null) as
+    | { id: string; name: string | null }
+    | null;
+
   return {
     id: comment.id,
-    [parentKey]: parentId,
-    authorId: comment.authorId,
-    content: comment.content,
-    author: comment.author,
-    createdAt: new Date(comment.createdAt).toISOString(),
-    updatedAt: new Date(comment.updatedAt).toISOString(),
+    parentKey,
+    parentId: raw[parentKey],
+    authorId: (raw.authorId ?? raw.createdById) as string,
+    author,
+    content: (raw.content ?? raw.body ?? '') as string,
+    createdAt: new Date(comment.createdAt),
+    updatedAt: new Date(comment.updatedAt),
+    parentCommentId: (raw.parentId ?? null) as string | null,
+    threadId: (raw.threadId ?? null) as string | null,
+    resolvedAt: raw.resolvedAt ? new Date(raw.resolvedAt as string) : null,
   };
+}
+
+function transformComment(comment: AnyComment): Record<string, unknown> {
+  const n = normalizeComment(comment);
+  const out: Record<string, unknown> = {
+    id: n.id,
+    [n.parentKey]: n.parentId,
+    authorId: n.authorId,
+    content: n.content,
+    author: n.author,
+    createdAt: n.createdAt.toISOString(),
+    updatedAt: n.updatedAt.toISOString(),
+  };
+  // Threading metadata only exists on feature comments — omit it elsewhere so
+  // the JSON of an action comment stays exactly as it was.
+  if (n.threadId !== null) out.threadId = n.threadId;
+  if (n.parentCommentId !== null && n.parentKey !== 'parentId') {
+    out.parentCommentId = n.parentCommentId;
+  }
+  if (n.resolvedAt) out.resolvedAt = n.resolvedAt.toISOString();
+  return out;
 }
 
 export function outputCommentJson(comment: AnyComment): void {
@@ -564,13 +623,20 @@ export function outputCommentJson(comment: AnyComment): void {
 }
 
 export function outputCommentPretty(comment: AnyComment): void {
-  const author = comment.author?.name ?? comment.authorId;
-  const when = formatDate(new Date(comment.createdAt));
+  const n = normalizeComment(comment);
+  const author = n.author?.name ?? n.authorId;
+  const when = formatDate(n.createdAt);
+  const badges = [
+    n.parentCommentId && n.parentKey !== 'parentId' ? chalk.gray('(reply)') : '',
+    n.resolvedAt ? chalk.green('(resolved)') : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
   console.log(chalk.gray('─'.repeat(50)));
-  console.log(`${chalk.bold(author)} ${chalk.gray(`— ${when}`)}`);
-  console.log(chalk.gray(`  ID: ${comment.id}`));
+  console.log(`${chalk.bold(author)} ${chalk.gray(`— ${when}`)}${badges ? ` ${badges}` : ''}`);
+  console.log(chalk.gray(`  ID: ${n.id}`));
   console.log();
-  console.log(comment.content);
+  console.log(n.content);
   console.log();
 }
 
