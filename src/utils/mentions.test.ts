@@ -8,6 +8,7 @@ function member(overrides: Partial<WorkspaceMember> & { id: string }): Workspace
     email: null,
     image: null,
     role: 'member',
+    teamRole: null,
     source: 'workspace',
     teams: [],
     mentionSyntax: `@[${overrides.name ?? overrides.id}](${overrides.id})`,

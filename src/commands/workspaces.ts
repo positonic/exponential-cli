@@ -116,8 +116,13 @@ export function createWorkspacesCommand(): Command {
           console.log(chalk.bold(`\nMembers (${members.length})\n`));
           for (const m of members) {
             const label = m.name ?? m.email ?? m.id;
+            // `role` is always the workspace role; a team member's team role is
+            // reported separately so it is never mistaken for workspace authority.
             const via = m.source === 'team'
-              ? chalk.gray(` via team${m.teams.length ? `: ${m.teams.map((t) => t.name).join(', ')}` : ''}`)
+              ? chalk.gray(
+                  ` via team${m.teams.length ? `: ${m.teams.map((t) => t.name).join(', ')}` : ''}` +
+                    (m.teamRole ? ` [team ${m.teamRole}]` : ''),
+                )
               : '';
             console.log(`${chalk.bold(label)} ${chalk.gray(`(${m.role})`)}${via}`);
             if (m.email) console.log(chalk.gray(`  ${m.email}`));
