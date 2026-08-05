@@ -15,6 +15,15 @@ import { createSearchCommand } from './commands/search.js';
 import { createTicketsCommand } from './commands/tickets.js';
 import { createWorkspacesCommand } from './commands/workspaces.js';
 import { createGoalsCommand } from './commands/goals.js';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+// Read the real version rather than a hand-maintained literal, which drifted
+// far enough that `--version` reported 1.0.0 while 1.9.0 was on npm.
+const PKG_VERSION: string = JSON.parse(
+  readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf-8'),
+).version;
 
 const program = new Command();
 
@@ -29,7 +38,7 @@ program
       '  epics are workspace-scoped and can group tickets and actions across products.',
     ].join('\n'),
   )
-  .version('1.0.0')
+  .version(PKG_VERSION)
   .option('--json', 'Output as JSON (default when piped)')
   .option('--pretty', 'Force pretty-printed output');
 
