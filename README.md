@@ -148,7 +148,37 @@ exponential workspaces list
 
 # Set default workspace
 exponential workspaces set-default <workspace-slug>
+
+# List members — each row carries the mention markup for that person
+exponential workspaces members --search andi
 ```
+
+### Comments and @mentions
+
+Features, tickets, actions, pages, and goals all take comments:
+
+```bash
+exponential features comment list --feature <feature-id>
+exponential features comment add  --feature <feature-id> -m "Looks good to me"
+exponential tickets  comment add  --id <ticket-id>       -m "Reproduced on staging"
+exponential pages    comment add  --page <page-id>       -m "Needs a diagram"
+exponential goals    comment add  --goal 42              -m "On track for Q3"
+```
+
+A mention is the literal markup `@[Display Name](userId)` — writing plain `@andi`
+notifies nobody. `--mention` expands a name, email, or user id into that markup:
+
+```bash
+exponential features comment add --feature <feature-id> \
+  --mention andi \
+  -m "@andi — could you sanity-check the scope here?"
+```
+
+`@andi` is substituted in place so the sentence still reads. If the body has no
+matching `@handle` the mention is prepended instead. `--mention` is repeatable,
+and an ambiguous name is an error rather than a guess.
+
+Editing and deleting are author-only. Find ids with `exponential search "<text>"`.
 
 ## Output Formats
 

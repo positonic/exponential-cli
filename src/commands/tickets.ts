@@ -4,6 +4,11 @@ import { getClient } from '../client/index.js';
 import { handleError } from '../utils/errors.js';
 import { resolveProductId, resolveWorkspaceId } from '../utils/resolve.js';
 import { resolveLabelIds } from './labels.js';
+import {
+  applyMentions,
+  collectMention,
+  MENTION_OPTION_DESCRIPTION,
+} from '../utils/mentions.js';
 
 function collectRepeatable(value: string, previous: string[]): string[] {
   return [...previous, value];
@@ -12,6 +17,8 @@ import {
   shouldUseJson,
   outputCommentJson,
   outputCommentPretty,
+  outputCommentsJson,
+  outputCommentsPretty,
   outputTicketJson,
   outputTicketPretty,
   outputTicketsJson,
@@ -522,28 +529,122 @@ export function createTicketsCommand(): Command {
   const comment = new Command('comment').description('Manage comments on a ticket');
 
   comment
-    .command('add')
-    .description('Add a comment to a ticket')
+    .command('list')
+    .description('List comments on a ticket')
     .requiredOption('--id <id>', 'Ticket CUID')
-    .requiredOption('-m, --message <text>', 'Comment content (markdown supported)')
-    .action(async (options: { id: string; message: string }, cmd: Command) => {
+    .action(async (options: { id: string }, cmd: Command) => {
       const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
       const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
       try {
         const client = getClient();
-        const created = await client.tickets.addComment({
-          ticketId: options.id,
-          content: options.message,
-        });
-        if (useJson) outputCommentJson(created);
-        else {
-          console.log('\n✓ Comment added');
-          outputCommentPretty(created);
-        }
+        // Ticket comments ride along on the detail fetch — there is no
+        // standalone list procedure server-side.
+        const ticket = await client.tickets.get(options.id);
+        const comments = ticket.comments ?? [];
+        if (useJson) outputCommentsJson(comments);
+        else outputCommentsPretty(comments);
       } catch (error) {
         handleError(error, useJson);
       }
     });
+
+  comment
+    .command('add')
+    .description('Add a comment to a ticket')
+    .requiredOption('--id <id>', 'Ticket CUID')
+    .requiredOption('-m, --message <text>', 'Comment content (markdown supported)')
+    .option('--mention <name>', MENTION_OPTION_DESCRIPTION, collectMention, [])
+    .option(
+      '--workspace <slug|id>',
+      'Workspace used to resolve --mention (defaults to your default workspace)',
+    )
+    .action(
+      async (
+        options: {
+          id: string;
+          message: string;
+          mention: string[];
+          workspace?: string;
+        },
+        cmd: Command,
+      ) => {
+        const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+        const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+        try {
+          const client = getClient();
+          const content =
+            options.mention.length > 0
+              ? await applyMentions(
+                  client,
+                  await resolveWorkspaceId(client, options.workspace),
+                  options.message,
+                  options.mention,
+                )
+              : options.message;
+
+          const created = await client.tickets.addComment({
+            ticketId: options.id,
+            content,
+          });
+          if (useJson) outputCommentJson(created);
+          else {
+            console.log('\n✓ Comment added');
+            outputCommentPretty(created);
+          }
+        } catch (error) {
+          handleError(error, useJson);
+        }
+      },
+    );
+
+  comment
+    .command('update')
+    .description('Update one of your own ticket comments')
+    .requiredOption('--comment-id <id>', 'Comment ID')
+    .requiredOption('-m, --message <text>', 'New comment content')
+    .option('--mention <name>', MENTION_OPTION_DESCRIPTION, collectMention, [])
+    .option(
+      '--workspace <slug|id>',
+      'Workspace used to resolve --mention (defaults to your default workspace)',
+    )
+    .action(
+      async (
+        options: {
+          commentId: string;
+          message: string;
+          mention: string[];
+          workspace?: string;
+        },
+        cmd: Command,
+      ) => {
+        const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+        const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+        try {
+          const client = getClient();
+          const content =
+            options.mention.length > 0
+              ? await applyMentions(
+                  client,
+                  await resolveWorkspaceId(client, options.workspace),
+                  options.message,
+                  options.mention,
+                )
+              : options.message;
+
+          const updated = await client.tickets.updateComment({
+            id: options.commentId,
+            content,
+          });
+          if (useJson) outputCommentJson(updated);
+          else {
+            console.log('\n✓ Comment updated');
+            outputCommentPretty(updated);
+          }
+        } catch (error) {
+          handleError(error, useJson);
+        }
+      },
+    );
 
   comment
     .command('delete')

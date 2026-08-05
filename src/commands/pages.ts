@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { Command } from 'commander';
 import { getClient } from '../client/index.js';
+import { createPageCommentsCommand } from './pageComments.js';
 import { handleError } from '../utils/errors.js';
 import { resolveWorkspaceId } from '../utils/resolve.js';
 import {
@@ -135,6 +136,8 @@ export function createPagesCommand(): Command {
         }
       },
     );
+
+  pages.addCommand(createPageCommentsCommand());
 
   return pages;
 }
