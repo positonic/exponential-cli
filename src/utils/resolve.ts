@@ -1,4 +1,4 @@
-import type { ExponentialClient } from 'exponential-sdk';
+import type { ExponentialClient, Workspace } from 'exponential-sdk';
 import { getConfig } from '../config/index.js';
 
 /**
@@ -15,6 +15,19 @@ export async function resolveWorkspaceId(
   client: ExponentialClient,
   slugOrId: string | undefined,
 ): Promise<string> {
+  return (await resolveWorkspace(client, slugOrId)).id;
+}
+
+/**
+ * Same resolution as {@link resolveWorkspaceId}, but returns the whole
+ * workspace. Callers that need to label rows with a workspace name or slug —
+ * anything cross-workspace — would otherwise pay a second lookup for data this
+ * function already had in hand.
+ */
+export async function resolveWorkspace(
+  client: ExponentialClient,
+  slugOrId: string | undefined,
+): Promise<Workspace> {
   const config = getConfig();
   const candidate = slugOrId ?? config.defaultWorkspaceSlug ?? config.defaultWorkspaceId;
 
@@ -26,9 +39,9 @@ export async function resolveWorkspaceId(
 
   const workspaces = await client.workspaces.list();
   const byId = workspaces.find((w) => w.id === candidate);
-  if (byId) return byId.id;
+  if (byId) return byId;
   const bySlug = workspaces.find((w) => w.slug === candidate);
-  if (bySlug) return bySlug.id;
+  if (bySlug) return bySlug;
 
   const known = workspaces.map((w) => w.slug).join(', ');
   throw new Error(
