@@ -10,8 +10,12 @@ vi.mock('../client/index.js', () => ({
 
 vi.mock('../utils/resolve.js', () => ({
   resolveWorkspaceId: vi.fn(),
+  resolveWorkspace: vi.fn(),
   resolveProductId: vi.fn(),
 }));
+
+const WS1 = { id: 'ws1', slug: 'clear', name: 'CLEAR' };
+const WS2 = { id: 'ws2', slug: 'personal', name: 'Personal' };
 
 function makeGoal(overrides: Record<string, unknown> = {}) {
   return {
@@ -95,12 +99,16 @@ function makeClient(overrides: { goal?: Record<string, unknown> } = {}) {
       unlinkFeature: vi.fn().mockResolvedValue({ success: true }),
     },
   };
-  const client = { goals };
+  const listWorkspaces = vi.fn().mockResolvedValue([WS1, WS2]);
+  const client = { goals, workspaces: { list: listWorkspaces } };
   vi.mocked(clientModule.getClient).mockReturnValue(
     client as unknown as ReturnType<typeof clientModule.getClient>,
   );
   vi.mocked(resolveModule.resolveWorkspaceId).mockResolvedValue('ws1');
-  return goals;
+  vi.mocked(resolveModule.resolveWorkspace).mockResolvedValue(
+    WS1 as unknown as Awaited<ReturnType<typeof resolveModule.resolveWorkspace>>,
+  );
+  return Object.assign(goals, { listWorkspaces });
 }
 
 // Run args as if typed after `exponential goals`.
@@ -144,7 +152,7 @@ describe('goals list', () => {
 
     await run(['list', '--workspace', 'clear', '--period', 'Q3-2026', '--status', 'active']);
 
-    expect(resolveModule.resolveWorkspaceId).toHaveBeenCalledWith(
+    expect(resolveModule.resolveWorkspace).toHaveBeenCalledWith(
       expect.anything(),
       'clear',
     );
@@ -160,7 +168,7 @@ describe('goals list', () => {
 
     await run(['list']);
 
-    expect(resolveModule.resolveWorkspaceId).toHaveBeenCalledWith(
+    expect(resolveModule.resolveWorkspace).toHaveBeenCalledWith(
       expect.anything(),
       undefined,
     );
@@ -537,5 +545,234 @@ describe('goals periods and stats', () => {
 
     expect(resolveModule.resolveWorkspaceId).not.toHaveBeenCalled();
     expect(goals.periods).toHaveBeenCalled();
+  });
+});
+
+describe('spec contract: --all-workspaces', () => {
+  // "Am I neglecting a goal" is inherently cross-workspace, so the flag fans
+  // out over every workspace rather than making each caller write the loop.
+  it('goals list queries every workspace and concatenates', async () => {
+    const goals = makeClient();
+
+    await run(['list', '--all-workspaces']);
+
+    expect(goals.listWorkspaces).toHaveBeenCalled();
+    expect(resolveModule.resolveWorkspace).not.toHaveBeenCalled();
+    expect(goals.list).toHaveBeenCalledTimes(2);
+    expect(goals.list).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: 'ws1' }),
+    );
+    expect(goals.list).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: 'ws2' }),
+    );
+  });
+
+  it('labels each goal with the workspace it came from', async () => {
+    makeClient();
+    const log = vi.spyOn(console, 'log');
+
+    await run(['list', '--all-workspaces']);
+
+    const rows = jsonFromLog(log).goals as Record<string, unknown>[];
+    expect(rows).toHaveLength(2);
+    expect(rows.map((g) => (g.workspace as { slug: string }).slug)).toEqual([
+      'clear',
+      'personal',
+    ]);
+  });
+
+  it('okrs list fans out too', async () => {
+    const goals = makeClient();
+
+    await runOkrs(['list', '--all-workspaces']);
+
+    expect(goals.keyResults.byObjective).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects --all-workspaces combined with --workspace', async () => {
+    const goals = makeClient();
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    const log = vi.spyOn(console, 'log');
+
+    await run(['list', '--all-workspaces', '--workspace', 'clear']);
+
+    expect(goals.list).not.toHaveBeenCalled();
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(JSON.stringify(jsonFromLog(log))).toContain('mutually exclusive');
+  });
+
+  it('-w is accepted as shorthand for --workspace', async () => {
+    const goals = makeClient();
+
+    await run(['list', '-w', 'clear']);
+
+    expect(resolveModule.resolveWorkspace).toHaveBeenCalledWith(
+      expect.anything(),
+      'clear',
+    );
+    expect(goals.list).toHaveBeenCalled();
+  });
+});
+
+describe('spec contract: okrs list period default and status filter', () => {
+  it('defaults to the current quarter', async () => {
+    const goals = makeClient();
+    const now = new Date();
+    const expected = `Q${Math.floor(now.getMonth() / 3) + 1}-${now.getFullYear()}`;
+
+    await runOkrs(['list', '--workspace', 'clear']);
+
+    expect(goals.keyResults.byObjective).toHaveBeenCalledWith(
+      expect.objectContaining({ period: expected }),
+    );
+  });
+
+  it('--period all opts out of the default', async () => {
+    const goals = makeClient();
+
+    await runOkrs(['list', '--workspace', 'clear', '--period', 'all']);
+
+    expect(goals.keyResults.byObjective).toHaveBeenCalledWith(
+      expect.objectContaining({ period: undefined }),
+    );
+  });
+
+  // --status is a key-result filter, and an objective with no matching key
+  // result is noise in a "what's off-track" view, so it drops out entirely.
+  it('--status keeps only matching key results and drops emptied objectives', async () => {
+    const goals = makeClient();
+    goals.keyResults.byObjective.mockResolvedValue([
+      {
+        id: 1,
+        title: 'Mixed',
+        status: 'active',
+        period: 'Q3-2026',
+        health: null,
+        description: null,
+        workspaceId: 'ws1',
+        driUserId: null,
+        parentGoalId: null,
+        progress: 0,
+        statusCounts: { 'on-track': 1, 'at-risk': 0, 'off-track': 1, achieved: 0 },
+        keyResults: [
+          makeKeyResult({ id: 'kr-ok', status: 'on-track' }),
+          makeKeyResult({ id: 'kr-bad', status: 'off-track' }),
+        ],
+      },
+      {
+        id: 2,
+        title: 'All fine',
+        status: 'active',
+        period: 'Q3-2026',
+        health: null,
+        description: null,
+        workspaceId: 'ws1',
+        driUserId: null,
+        parentGoalId: null,
+        progress: 0,
+        statusCounts: { 'on-track': 1, 'at-risk': 0, 'off-track': 0, achieved: 0 },
+        keyResults: [makeKeyResult({ id: 'kr-fine', status: 'on-track' })],
+      },
+    ]);
+    const log = vi.spyOn(console, 'log');
+
+    await runOkrs(['list', '--workspace', 'clear', '--status', 'off-track']);
+
+    const out = jsonFromLog(log);
+    const objectives = out.objectives as Record<string, unknown>[];
+    expect(objectives).toHaveLength(1);
+    expect(objectives[0]!.id).toBe(1);
+    expect((objectives[0]!.keyResults as { id: string }[]).map((k) => k.id)).toEqual([
+      'kr-bad',
+    ]);
+    expect(out.totalKeyResults).toBe(1);
+  });
+
+  it('rejects an unknown key-result status', async () => {
+    const goals = makeClient();
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+
+    await runOkrs(['list', '--workspace', 'clear', '--status', 'nope']);
+
+    expect(goals.keyResults.byObjective).not.toHaveBeenCalled();
+    expect(exit).toHaveBeenCalledWith(1);
+  });
+});
+
+describe('spec contract: JSON fields', () => {
+  it('goals list carries progress, workspace and the project join', async () => {
+    const goals = makeClient();
+    goals.list.mockResolvedValue([
+      makeGoal({
+        resolvedProgress: 61,
+        isProgressManual: false,
+        workspace: WS1,
+        lifeDomain: { id: 3, title: 'Career/Business' },
+        projects: [{ id: 'prj_launch', name: 'Q3 Launch', slug: 'q3-launch' }],
+        _count: { keyResults: 3 },
+      }),
+    ]);
+    const log = vi.spyOn(console, 'log');
+
+    await run(['list', '--workspace', 'clear']);
+
+    expect((jsonFromLog(log).goals as Record<string, unknown>[])[0]).toMatchObject({
+      id: 46,
+      progress: 61,
+      isProgressManual: false,
+      workspace: { id: 'ws1', slug: 'clear', name: 'CLEAR' },
+      lifeDomain: { id: 3, title: 'Career/Business' },
+      projects: [{ id: 'prj_launch', name: 'Q3 Launch', slug: 'q3-launch' }],
+      keyResultCount: 3,
+    });
+  });
+
+  it('reports progress as null rather than 0 when the server omits it', async () => {
+    makeClient();
+    const log = vi.spyOn(console, 'log');
+
+    await run(['list', '--workspace', 'clear']);
+
+    const row = (jsonFromLog(log).goals as Record<string, unknown>[])[0]!;
+    expect(row.progress).toBeNull();
+    expect(row.isProgressManual).toBe(false);
+  });
+
+  it('key results carry unitLabel, periodEnd and a derived lastCheckInAt', async () => {
+    const goals = makeClient();
+    goals.keyResults.list.mockResolvedValue([
+      makeKeyResult({
+        unitLabel: 'deals',
+        periodEnd: new Date('2026-09-30T00:00:00Z'),
+        // Deliberately out of order: lastCheckInAt is the newest, not the first.
+        checkIns: [
+          { id: 'c1', createdAt: new Date('2026-07-02T09:14:00Z') },
+          { id: 'c2', createdAt: new Date('2026-07-20T09:14:00Z') },
+          { id: 'c3', createdAt: new Date('2026-07-11T09:14:00Z') },
+        ],
+      }),
+    ]);
+    const log = vi.spyOn(console, 'log');
+
+    await run(['kr', 'list', '--goal', '46']);
+
+    expect((jsonFromLog(log).keyResults as Record<string, unknown>[])[0]).toMatchObject({
+      unitLabel: 'deals',
+      periodEnd: '2026-09-30T00:00:00.000Z',
+      lastCheckInAt: '2026-07-20T09:14:00.000Z',
+    });
+  });
+
+  it('reports lastCheckInAt as null for a key result never checked in', async () => {
+    makeClient();
+    const log = vi.spyOn(console, 'log');
+
+    await run(['kr', 'list', '--goal', '46']);
+
+    expect((jsonFromLog(log).keyResults as Record<string, unknown>[])[0]).toMatchObject({
+      lastCheckInAt: null,
+      unitLabel: null,
+      periodEnd: null,
+    });
   });
 });

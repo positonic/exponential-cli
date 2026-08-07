@@ -1437,14 +1437,25 @@ function transformGoal(goal: Goal): Record<string, unknown> {
     status: goal.status,
     period: goal.period,
     health: goal.healthOverride ?? goal.health,
+    // Effective progress: manual override, else the key-result mean, else null
+    // for "no signal". Undefined (rather than null) means the server predates
+    // the field — report null rather than inventing a 0.
+    progress: goal.resolvedProgress ?? null,
+    isProgressManual: goal.isProgressManual ?? false,
     dueDate: goal.dueDate ? new Date(goal.dueDate).toISOString() : null,
     workspaceId: goal.workspaceId,
+    workspace: goal.workspace
+      ? { id: goal.workspace.id, slug: goal.workspace.slug, name: goal.workspace.name }
+      : null,
     parentGoalId: goal.parentGoalId,
     driUserId: goal.driUserId,
     lifeDomain: goal.lifeDomain ? { id: goal.lifeDomain.id, title: goal.lifeDomain.title } : null,
-    projects: goal.projects?.map((p) => ({ id: p.id, name: p.name })) ?? [],
+    // THE JOIN: actions carry a projectId and goals carry projects, so inverting
+    // this map is what ties a day's work back to an objective. Never elided.
+    projects:
+      goal.projects?.map((p) => ({ id: p.id, name: p.name, slug: p.slug ?? null })) ?? [],
     childGoals: goal.childGoals?.map((c) => ({ id: c.id, title: c.title, status: c.status })) ?? [],
-    keyResultCount: goal._count?.keyResults ?? null,
+    keyResultCount: goal._count?.keyResults ?? goal.keyResults?.length ?? null,
     createdAt: goal.createdAt ? new Date(goal.createdAt).toISOString() : null,
     updatedAt: goal.updatedAt ? new Date(goal.updatedAt).toISOString() : null,
   };
@@ -1587,6 +1598,20 @@ export function outputGoalStatsPretty(stats: GoalStats): void {
 
 // ─── Key result output ─────────────────────────────────────
 
+/**
+ * Most recent check-in timestamp. Not a column — derived from the `checkIns`
+ * the read already includes, because "this key result has not been touched in
+ * five weeks" is a finding, and every consumer would otherwise recompute it.
+ * Null when the read carried no check-ins, or the key result has never had one.
+ */
+function lastCheckInAt(kr: KeyResult): string | null {
+  if (!kr.checkIns?.length) return null;
+  const latest = kr.checkIns.reduce((newest, c) =>
+    new Date(c.createdAt) > new Date(newest.createdAt) ? c : newest,
+  );
+  return new Date(latest.createdAt).toISOString();
+}
+
 function transformKeyResult(kr: KeyResult): Record<string, unknown> {
   return {
     id: kr.id,
@@ -1601,7 +1626,10 @@ function transformKeyResult(kr: KeyResult): Record<string, unknown> {
     targetValue: kr.targetValue,
     progress: keyResultProgress(kr),
     unit: kr.unit,
+    unitLabel: kr.unitLabel ?? null,
     period: kr.period,
+    periodEnd: kr.periodEnd ? new Date(kr.periodEnd).toISOString() : null,
+    lastCheckInAt: lastCheckInAt(kr),
     confidence: kr.confidence ?? null,
     driUserId: kr.driUserId,
     workspaceId: kr.workspaceId,
@@ -1686,6 +1714,13 @@ function transformObjective(objective: ObjectiveWithKeyResults): Record<string, 
     progress: objective.progress,
     statusCounts: objective.statusCounts,
     workspaceId: objective.workspaceId,
+    workspace: objective.workspace
+      ? {
+          id: objective.workspace.id,
+          slug: objective.workspace.slug,
+          name: objective.workspace.name,
+        }
+      : null,
     parentGoalId: objective.parentGoalId,
     keyResults: objective.keyResults.map(transformKeyResult),
   };

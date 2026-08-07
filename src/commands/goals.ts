@@ -4,10 +4,12 @@ import type {
   GoalWritableStatus,
   KeyResultStatus,
   KeyResultUnit,
+  ObjectiveWithKeyResults,
+  Workspace,
 } from 'exponential-sdk';
 import { getClient } from '../client/index.js';
 import { handleError } from '../utils/errors.js';
-import { resolveWorkspaceId } from '../utils/resolve.js';
+import { resolveWorkspace, resolveWorkspaceId } from '../utils/resolve.js';
 import {
   applyMentions,
   collectMention,
@@ -79,6 +81,36 @@ const KEY_RESULT_UNITS: KeyResultUnit[] = [
   'hours',
   'custom',
 ];
+
+/**
+ * The current quarter as a period string, e.g. `Q3-2026`. Mirrors how the
+ * server derives the coaching-home period; `okrs list` defaults to it because
+ * "how is the quarter going" almost always means *this* quarter.
+ */
+function currentPeriod(): string {
+  const now = new Date();
+  return `Q${Math.floor(now.getMonth() / 3) + 1}-${now.getFullYear()}`;
+}
+
+/**
+ * Resolve `--workspace` / `--all-workspaces` to the set of workspaces to read.
+ *
+ * "Am I neglecting a goal" is inherently a cross-workspace question, so the
+ * flag lives here rather than making every caller write the loop. The
+ * procedures are per-workspace, so this fans out and the caller concatenates.
+ */
+async function targetWorkspaces(
+  client: ReturnType<typeof getClient>,
+  options: { workspace?: string; allWorkspaces?: boolean },
+): Promise<Workspace[]> {
+  if (options.allWorkspaces) {
+    if (options.workspace) {
+      throw new Error('--workspace and --all-workspaces are mutually exclusive.');
+    }
+    return await client.workspaces.list();
+  }
+  return [await resolveWorkspace(client, options.workspace)];
+}
 
 /**
  * Objective ids are integers, not cuids — the CLI parses them here so a typo
@@ -159,7 +191,7 @@ function createKeyResultsCommand(): Command {
   kr.command('list')
     .description('List key results')
     .option('--goal <id>', 'Objective ID (a number)')
-    .option('--workspace <slug|id>', 'Workspace (workspace-wide: every member\'s KRs)')
+    .option('-w, --workspace <slug|id>', 'Workspace (workspace-wide: every member\'s KRs)')
     .option('--period <period>', 'Period, e.g. Q3-2026')
     .option('--status <status>', `Filter by status: ${KEY_RESULT_STATUSES.join(', ')}`)
     .option('--mine', 'Narrow a workspace list to key results you own')
@@ -642,8 +674,12 @@ export function createGoalsCommand(): Command {
 
   goals
     .command('list')
-    .description('List objectives in a workspace')
-    .option('--workspace <slug|id>', 'Workspace slug or ID (defaults to your default workspace)')
+    .description(
+      'List objectives, each with the projects linked to it — the join that ' +
+        'ties an action (which carries a projectId) back to a goal.',
+    )
+    .option('-w, --workspace <slug|id>', 'Workspace slug or ID (defaults to your default workspace)')
+    .option('--all-workspaces', 'List across every workspace you belong to')
     .option('--period <period>', 'Filter by period, e.g. Q3-2026')
     .option('--status <status>', `Filter by status: ${GOAL_STATUSES.join(', ')}`)
     .option('--tree', 'Render the parent/child cascade instead of a flat list')
@@ -651,6 +687,7 @@ export function createGoalsCommand(): Command {
       async (
         options: {
           workspace?: string;
+          allWorkspaces?: boolean;
           period?: string;
           status?: string;
           tree?: boolean;
@@ -662,27 +699,41 @@ export function createGoalsCommand(): Command {
         try {
           const status = validateGoalStatus(options.status);
           const client = getClient();
-          const workspaceId = await resolveWorkspaceId(client, options.workspace);
+          const workspaces = await targetWorkspaces(client, options);
 
           if (options.tree) {
             // getGoalTree has no period filter, so --period is applied here.
             // It only prunes roots — a matching child under a non-matching
             // parent would otherwise vanish, which is the opposite of what a
             // cascade view is for.
-            const tree = await client.goals.tree({ workspaceId, status });
+            const trees = (
+              await Promise.all(
+                workspaces.map((w) => client.goals.tree({ workspaceId: w.id, status })),
+              )
+            ).flat();
             const filtered = options.period
-              ? tree.filter((g) => g.period === options.period)
-              : tree;
+              ? trees.filter((g) => g.period === options.period)
+              : trees;
             if (useJson) outputGoalTreeJson(filtered);
             else outputGoalTreePretty(filtered);
             return;
           }
 
-          const list = await client.goals.list({
-            workspaceId,
-            period: options.period,
-            status,
-          });
+          const list = (
+            await Promise.all(
+              workspaces.map(async (workspace) => {
+                const goals = await client.goals.list({
+                  workspaceId: workspace.id,
+                  period: options.period,
+                  status,
+                });
+                // The server attaches `workspace`, but only since the goals
+                // release — fill it in from the workspace we just queried so a
+                // cross-workspace list is labelled either way.
+                return goals.map((g) => ({ ...g, workspace: g.workspace ?? workspace }));
+              }),
+            )
+          ).flat();
           if (useJson) outputGoalsJson(list);
           else outputGoalsPretty(list);
         } catch (error) {
@@ -710,7 +761,7 @@ export function createGoalsCommand(): Command {
     .command('create')
     .description('Create an objective')
     .requiredOption('-t, --title <text>', 'Objective title')
-    .option('--workspace <slug|id>', 'Workspace slug or ID (defaults to your default workspace)')
+    .option('-w, --workspace <slug|id>', 'Workspace slug or ID (defaults to your default workspace)')
     .option('--period <period>', 'Period, e.g. Q3-2026 or Annual-2026')
     .option('--status <status>', `Status: ${GOAL_WRITABLE_STATUSES.join(', ')}`)
     .option('-d, --description <text>', 'Description (markdown supported)')
@@ -937,7 +988,7 @@ export function createGoalsCommand(): Command {
   goals
     .command('stats')
     .description('Objective and key-result counts, average progress and confidence')
-    .option('--workspace <slug|id>', 'Workspace slug or ID (defaults to your default workspace)')
+    .option('-w, --workspace <slug|id>', 'Workspace slug or ID (defaults to your default workspace)')
     .option('--period <period>', 'Period, e.g. Q3-2026')
     .action(
       async (options: { workspace?: string; period?: string }, cmd: Command) => {
@@ -978,17 +1029,30 @@ export function createOkrsCommand(): Command {
 
   okrs
     .command('list')
-    .description('List objectives with their key results')
-    .option('--workspace <slug|id>', 'Workspace slug or ID (defaults to your default workspace)')
-    .option('--period <period>', 'Period, e.g. Q3-2026')
+    .description(
+      'List objectives with their key results. Defaults to the current ' +
+        'quarter — pass --period all for every period.',
+    )
+    .option('-w, --workspace <slug|id>', 'Workspace slug or ID (defaults to your default workspace)')
+    .option('--all-workspaces', 'List across every workspace you belong to')
+    .option(
+      '--period <period>',
+      `Period, e.g. Q3-2026, or "all" for every period (default: ${currentPeriod()})`,
+    )
     .option('--paired-period', 'Also include the period\'s parent annual period')
+    .option(
+      '--status <status>',
+      `Keep only key results with this status: ${KEY_RESULT_STATUSES.join(', ')}`,
+    )
     .option('--mine', 'Only objectives and key results you are the DRI for')
     .action(
       async (
         options: {
           workspace?: string;
+          allWorkspaces?: boolean;
           period?: string;
           pairedPeriod?: boolean;
+          status?: string;
           mine?: boolean;
         },
         cmd: Command,
@@ -996,14 +1060,45 @@ export function createOkrsCommand(): Command {
         const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
         const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
         try {
+          const status = validateKeyResultStatus(options.status);
           const client = getClient();
-          const workspaceId = await resolveWorkspaceId(client, options.workspace);
-          const objectives = await client.goals.keyResults.byObjective({
-            workspaceId,
-            period: options.period,
-            includePairedPeriod: options.pairedPeriod,
-            onlyMine: options.mine,
-          });
+          const workspaces = await targetWorkspaces(client, options);
+          // "how is the quarter going" almost always means this quarter, so an
+          // omitted --period narrows to it. `all` is the escape hatch.
+          const period =
+            options.period === 'all' ? undefined : options.period ?? currentPeriod();
+
+          let objectives = (
+            await Promise.all(
+              workspaces.map(async (workspace) => {
+                const found = await client.goals.keyResults.byObjective({
+                  workspaceId: workspace.id,
+                  period,
+                  includePairedPeriod: options.pairedPeriod,
+                  onlyMine: options.mine,
+                });
+                // getByObjective doesn't return the workspace; attach the one
+                // we queried so a cross-workspace list can label each row.
+                return found.map((o) => ({ ...o, workspace }));
+              }),
+            )
+          ).flat() as ObjectiveWithKeyResults[];
+
+          if (status) {
+            // getByObjective takes no status input, so this filters here —
+            // dropping non-matching key results and then any objective left
+            // with none, so "show me what's off-track" isn't padded with
+            // objectives that have nothing off-track.
+            objectives = objectives
+              .map((o) => ({
+                ...o,
+                keyResults: o.keyResults.filter(
+                  (kr) => (kr.statusOverride ?? kr.status) === status,
+                ),
+              }))
+              .filter((o) => o.keyResults.length > 0);
+          }
+
           if (useJson) outputObjectivesJson(objectives);
           else outputObjectivesPretty(objectives);
         } catch (error) {
@@ -1015,7 +1110,7 @@ export function createOkrsCommand(): Command {
   okrs
     .command('stats')
     .description('Objective and key-result counts, average progress and confidence')
-    .option('--workspace <slug|id>', 'Workspace slug or ID (defaults to your default workspace)')
+    .option('-w, --workspace <slug|id>', 'Workspace slug or ID (defaults to your default workspace)')
     .option('--period <period>', 'Period, e.g. Q3-2026')
     .action(
       async (options: { workspace?: string; period?: string }, cmd: Command) => {
