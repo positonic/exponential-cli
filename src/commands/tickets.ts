@@ -136,18 +136,8 @@ export function createTicketsCommand(): Command {
             );
           }
           const client = getClient();
-          let workspaceId: string | undefined;
-          let productId: string | undefined;
-          if (options.product) {
-            workspaceId = await resolveWorkspaceId(client, options.workspace);
-            productId = await resolveProductId(
-              client,
-              workspaceId,
-              options.product,
-            );
-          }
-          const list = await client.tickets.list({
-            productId,
+          const workspaceId = await resolveWorkspaceId(client, options.workspace);
+          const filters = {
             status,
             type,
             featureId: options.feature,
@@ -155,7 +145,37 @@ export function createTicketsCommand(): Command {
             assigneeId: options.assignee,
             prUrl: options.pr,
             branchName: options.branch,
-          });
+          };
+
+          // `product.ticket.list` is product-scoped on the server — there is no
+          // workspace-wide ticket query — so a --pr/--branch lookup with no
+          // --product sweeps every product in the workspace and merges. Without
+          // this the flag combination sent productId: undefined and the server
+          // rejected it outright. A PR URL or branch name identifies at most a
+          // handful of tickets, so the fan-out stays small.
+          let list;
+          if (options.product) {
+            const productId = await resolveProductId(
+              client,
+              workspaceId,
+              options.product,
+            );
+            list = await client.tickets.list({ productId, ...filters });
+          } else {
+            const products = await client.products.list(workspaceId);
+            const settled = await Promise.allSettled(
+              products.map((p) => client.tickets.list({ productId: p.id, ...filters })),
+            );
+            list = settled.flatMap((r) => (r.status === 'fulfilled' ? r.value : []));
+            // A product the caller can't read must not blank the whole lookup,
+            // but a silently short result is worse than a noisy one.
+            settled.forEach((r, i) => {
+              if (r.status !== 'rejected') return;
+              const reason =
+                r.reason instanceof Error ? r.reason.message : String(r.reason);
+              console.error(`Warning: skipped product ${products[i]!.slug}: ${reason}`);
+            });
+          }
           let filtered = list;
           if (options.label.length > 0) {
             const labelIds = new Set(
