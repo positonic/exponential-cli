@@ -113,6 +113,44 @@ async function targetWorkspaces(
 }
 
 /**
+ * Fan a per-workspace read out across workspaces, keeping partial results.
+ *
+ * A cross-workspace sweep exists to answer "what am I neglecting", so one
+ * workspace the caller can no longer read must not take the rest with it —
+ * `okr.getByObjective` throws FORBIDDEN for a non-member, and membership does
+ * lapse. Failures are surfaced on stderr rather than swallowed: a silently
+ * short list is worse than none. If nothing succeeded, the first error is
+ * rethrown, which is also what makes a single-workspace read still fail loudly.
+ */
+async function fanOutByWorkspace<T>(
+  workspaces: Workspace[],
+  read: (workspace: Workspace) => Promise<T[]>,
+): Promise<T[]> {
+  const settled = await Promise.allSettled(workspaces.map(read));
+  const items: T[] = [];
+  const skipped: string[] = [];
+  settled.forEach((result, i) => {
+    if (result.status === 'fulfilled') {
+      items.push(...result.value);
+      return;
+    }
+    const reason =
+      result.reason instanceof Error ? result.reason.message : String(result.reason);
+    skipped.push(`${workspaces[i]!.slug}: ${reason}`);
+  });
+
+  if (skipped.length === workspaces.length) {
+    const [first] = settled.filter((r) => r.status === 'rejected');
+    throw (first as PromiseRejectedResult).reason;
+  }
+  // stderr, so a skipped workspace is visible without corrupting piped JSON.
+  for (const line of skipped) {
+    console.error(`Warning: skipped workspace ${line}`);
+  }
+  return items;
+}
+
+/**
  * Objective ids are integers, not cuids — the CLI parses them here so a typo
  * fails with a readable message instead of a server-side zod error.
  */
@@ -284,7 +322,11 @@ function createKeyResultsCommand(): Command {
           // `period` is required by the server but is a property of the OKR
           // cycle, not of the individual KR — fall back to the objective's so
           // the common case needs one less flag.
+          // The SDK resolves the objective's workspace when none is passed; if
+          // we fetch the objective here anyway, hand that workspace over rather
+          // than making it read the same row twice.
           let period = options.period;
+          let workspaceId: string | undefined;
           if (!period) {
             const goal = await client.goals.get(goalId);
             if (!goal.period) {
@@ -293,10 +335,12 @@ function createKeyResultsCommand(): Command {
               );
             }
             period = goal.period;
+            workspaceId = goal.workspaceId ?? undefined;
           }
 
           const keyResult = await client.goals.keyResults.create({
             goalId,
+            workspaceId,
             title: options.title,
             targetValue: parseNumber(options.target, '--target'),
             startValue,
@@ -706,11 +750,9 @@ export function createGoalsCommand(): Command {
             // It only prunes roots — a matching child under a non-matching
             // parent would otherwise vanish, which is the opposite of what a
             // cascade view is for.
-            const trees = (
-              await Promise.all(
-                workspaces.map((w) => client.goals.tree({ workspaceId: w.id, status })),
-              )
-            ).flat();
+            const trees = await fanOutByWorkspace(workspaces, (w) =>
+              client.goals.tree({ workspaceId: w.id, status }),
+            );
             const filtered = options.period
               ? trees.filter((g) => g.period === options.period)
               : trees;
@@ -719,21 +761,17 @@ export function createGoalsCommand(): Command {
             return;
           }
 
-          const list = (
-            await Promise.all(
-              workspaces.map(async (workspace) => {
-                const goals = await client.goals.list({
-                  workspaceId: workspace.id,
-                  period: options.period,
-                  status,
-                });
-                // The server attaches `workspace`, but only since the goals
-                // release — fill it in from the workspace we just queried so a
-                // cross-workspace list is labelled either way.
-                return goals.map((g) => ({ ...g, workspace: g.workspace ?? workspace }));
-              }),
-            )
-          ).flat();
+          const list = await fanOutByWorkspace(workspaces, async (workspace) => {
+            const goals = await client.goals.list({
+              workspaceId: workspace.id,
+              period: options.period,
+              status,
+            });
+            // The server attaches `workspace`, but only since the goals
+            // release — fill it in from the workspace we just queried so a
+            // cross-workspace list is labelled either way.
+            return goals.map((g) => ({ ...g, workspace: g.workspace ?? workspace }));
+          });
           if (useJson) outputGoalsJson(list);
           else outputGoalsPretty(list);
         } catch (error) {
@@ -1068,21 +1106,17 @@ export function createOkrsCommand(): Command {
           const period =
             options.period === 'all' ? undefined : options.period ?? currentPeriod();
 
-          let objectives = (
-            await Promise.all(
-              workspaces.map(async (workspace) => {
-                const found = await client.goals.keyResults.byObjective({
-                  workspaceId: workspace.id,
-                  period,
-                  includePairedPeriod: options.pairedPeriod,
-                  onlyMine: options.mine,
-                });
-                // getByObjective doesn't return the workspace; attach the one
-                // we queried so a cross-workspace list can label each row.
-                return found.map((o) => ({ ...o, workspace }));
-              }),
-            )
-          ).flat() as ObjectiveWithKeyResults[];
+          let objectives = (await fanOutByWorkspace(workspaces, async (workspace) => {
+            const found = await client.goals.keyResults.byObjective({
+              workspaceId: workspace.id,
+              period,
+              includePairedPeriod: options.pairedPeriod,
+              onlyMine: options.mine,
+            });
+            // getByObjective doesn't return the workspace; attach the one we
+            // queried so a cross-workspace list can label each row.
+            return found.map((o) => ({ ...o, workspace }));
+          })) as ObjectiveWithKeyResults[];
 
           if (status) {
             // getByObjective takes no status input, so this filters here —

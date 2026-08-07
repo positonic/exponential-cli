@@ -776,3 +776,90 @@ describe('spec contract: JSON fields', () => {
     });
   });
 });
+
+describe('cross-workspace fan-out keeps partial results', () => {
+  // A sweep exists to answer "what am I neglecting". One workspace the caller
+  // can no longer read must not take the others with it — byObjective throws
+  // FORBIDDEN for a non-member, and membership lapses.
+  it('reports the goals it could read and warns about the one it could not', async () => {
+    const goals = makeClient();
+    goals.list
+      .mockResolvedValueOnce([makeGoal({ id: 1 })])
+      .mockRejectedValueOnce(new Error('You are not a member of this workspace'));
+    const log = vi.spyOn(console, 'log');
+    const error = vi.spyOn(console, 'error');
+
+    await run(['list', '--all-workspaces']);
+
+    const rows = jsonFromLog(log).goals as Record<string, unknown>[];
+    expect(rows.map((g) => g.id)).toEqual([1]);
+    const warned = error.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned).toContain('skipped workspace personal');
+    expect(warned).toContain('not a member');
+  });
+
+  it('still fails loudly when every workspace fails', async () => {
+    const goals = makeClient();
+    goals.list.mockRejectedValue(new Error('token expired'));
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    const log = vi.spyOn(console, 'log');
+
+    await run(['list', '--all-workspaces']);
+
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(JSON.stringify(jsonFromLog(log))).toContain('token expired');
+  });
+
+  it('a single-workspace read still surfaces its error rather than an empty list', async () => {
+    const goals = makeClient();
+    goals.list.mockRejectedValue(new Error('workspace is gone'));
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    const log = vi.spyOn(console, 'log');
+
+    await run(['list', '--workspace', 'clear']);
+
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(JSON.stringify(jsonFromLog(log))).toContain('workspace is gone');
+  });
+
+  it('okrs list isolates per workspace too', async () => {
+    const goals = makeClient();
+    goals.keyResults.byObjective
+      .mockResolvedValueOnce([])
+      .mockRejectedValueOnce(new Error('forbidden'));
+    const error = vi.spyOn(console, 'error');
+
+    await runOkrs(['list', '--all-workspaces']);
+
+    expect(error.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+      'skipped workspace personal',
+    );
+  });
+});
+
+describe('goals kr create reuses the objective it already read', () => {
+  it("passes the objective's workspace so the SDK need not re-read it", async () => {
+    const goals = makeClient();
+
+    await run(['kr', 'create', '--goal', '46', '--title', 'NPS', '--target', '45']);
+
+    expect(goals.get).toHaveBeenCalledTimes(1);
+    expect(goals.keyResults.create).toHaveBeenCalledWith(
+      expect.objectContaining({ goalId: 46, workspaceId: 'ws1' }),
+    );
+  });
+
+  it('leaves the workspace to the SDK when --period made the read unnecessary', async () => {
+    const goals = makeClient();
+
+    await run([
+      'kr', 'create', '--goal', '46', '--title', 'NPS',
+      '--target', '45', '--period', 'Q3-2026',
+    ]);
+
+    expect(goals.get).not.toHaveBeenCalled();
+    expect(goals.keyResults.create).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: undefined }),
+    );
+  });
+});
