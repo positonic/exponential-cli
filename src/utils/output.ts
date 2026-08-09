@@ -1771,6 +1771,10 @@ export function outputObjectivesPretty(objectives: ObjectiveWithKeyResults[]): v
 export function outputProjectJson(project: ProjectDetail): void {
   console.log(JSON.stringify({
     ...transformProject(project),
+    // The detail read has no `workspace` relation to expand, unlike the list
+    // read — so `transformProject` alone would emit `workspace: null` and no id
+    // at all, which reads as "personal project" rather than "not fetched".
+    workspaceId: project.workspaceId,
     slug: project.slug ?? null,
     productId: project.productId ?? null,
     driId: project.driId ?? null,

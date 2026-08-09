@@ -123,6 +123,18 @@ describe('projects get', () => {
     expect(calls.get).toHaveBeenCalledWith('kr-support-cmjoko5550000rz03x4eqvycy');
   });
 
+  // `project.getById` returns no `workspace` relation, so the detail JSON has
+  // to carry the id itself — a bare `workspace: null` reads as "personal
+  // project" to anything parsing this output.
+  it('reports which workspace the project belongs to', async () => {
+    makeClient();
+    const log = vi.spyOn(console, 'log');
+
+    await run(['get', 'p1']);
+
+    expect(jsonFromLog(log).workspaceId).toBe('ws1');
+  });
+
   it('surfaces the OKR edges the list read omits', async () => {
     makeClient({
       project: makeProject({
