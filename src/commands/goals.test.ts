@@ -252,6 +252,20 @@ describe('goals update — never clobbers', () => {
     expect(sent.title).toBeUndefined();
   });
 
+  it('re-homes with a workspace slug, and "none" makes the objective personal', async () => {
+    const goals = makeClient();
+
+    await run(['update', '--id', '46', '--workspace', 'clear']);
+    expect(
+      (goals.update.mock.calls[0]![0] as Record<string, unknown>).workspaceId,
+    ).toBe('ws1');
+
+    await run(['update', '--id', '46', '--workspace', 'none']);
+    expect(
+      (goals.update.mock.calls[1]![0] as Record<string, unknown>).workspaceId,
+    ).toBeNull();
+  });
+
   it('refuses on-hold, pointing at set-status', async () => {
     const goals = makeClient();
     const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
@@ -332,6 +346,55 @@ describe('goals reparent', () => {
   });
 });
 
+// `KeyResult.goalId` cascades, so deleting an objective destroys its key
+// results and every check-in recorded against them. Nothing else in the CLI
+// can reconstruct that history, so the delete asks first.
+describe('goals delete guards the cascade', () => {
+  it('deletes an objective that has no key results', async () => {
+    const goals = makeClient({ goal: makeGoal({ keyResults: [] }) });
+    const log = vi.spyOn(console, 'log');
+
+    await run(['delete', '--id', '46']);
+
+    expect(goals.delete).toHaveBeenCalledWith(46);
+    expect(jsonFromLog(log)).toMatchObject({ deleted: true, id: 46 });
+  });
+
+  it('refuses while key results would go with it', async () => {
+    const goals = makeClient({
+      goal: makeGoal({ keyResults: [{ id: 'clkr1' }, { id: 'clkr2' }] }),
+    });
+    const log = vi.spyOn(console, 'log');
+
+    await run(['delete', '--id', '46']);
+
+    expect(goals.delete).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(1);
+    expect(jsonFromLog(log)).toMatchObject({
+      deleted: false,
+      id: 46,
+      reason: 'has 2 key result(s)',
+    });
+  });
+
+  it('--with-key-results goes ahead and reports what went with it', async () => {
+    const goals = makeClient({
+      goal: makeGoal({
+        keyResults: [{ id: 'clkr1' }],
+        childGoals: [{ id: 47, title: 'Sub', status: 'active', health: null }],
+      }),
+    });
+    const log = vi.spyOn(console, 'log');
+
+    await run(['delete', '--id', '46', '--with-key-results']);
+
+    expect(goals.delete).toHaveBeenCalledWith(46);
+    const out = jsonFromLog(log);
+    expect(out.keyResultsDeleted).toHaveLength(1);
+    expect(out.childGoalsDetached).toHaveLength(1);
+  });
+});
+
 describe('goals create', () => {
   it('resolves the workspace slug and forwards the fields', async () => {
     const goals = makeClient();
@@ -356,19 +419,39 @@ describe('goals create', () => {
 });
 
 describe('goals kr', () => {
-  it('lists without widening to a workspace when none is named', async () => {
+  // Verified live against objective 48: the unscoped read returned 0 of its 6
+  // key results, because `okr.getAll` without a workspace filters on the
+  // caller's userId. Borrowing the objective's own workspace is narrower than
+  // falling back to the default workspace, which would widen the list instead.
+  it('borrows the objective workspace so every member\'s key results show', async () => {
     const goals = makeClient();
 
     await run(['kr', 'list', '--goal', '46']);
 
     expect(resolveModule.resolveWorkspaceId).not.toHaveBeenCalled();
+    expect(goals.get).toHaveBeenCalledWith(46);
     expect(goals.keyResults.list).toHaveBeenCalledWith({
-      workspaceId: undefined,
+      workspaceId: 'ws1',
       goalId: 46,
       period: undefined,
       status: undefined,
       onlyMine: undefined,
     });
+  });
+
+  it('stays personal for a personal objective, and when nothing is named', async () => {
+    const goals = makeClient({ goal: makeGoal({ workspaceId: null }) });
+
+    await run(['kr', 'list', '--goal', '46']);
+    expect(goals.keyResults.list).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: undefined, goalId: 46 }),
+    );
+
+    await run(['kr', 'list']);
+    expect(resolveModule.resolveWorkspaceId).not.toHaveBeenCalled();
+    expect(goals.keyResults.list).toHaveBeenLastCalledWith(
+      expect.objectContaining({ workspaceId: undefined, goalId: undefined }),
+    );
   });
 
   it('resolves a workspace slug for a workspace-wide list', async () => {

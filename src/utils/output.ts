@@ -24,6 +24,7 @@ import type {
   PipelineStage,
   Product,
   Project,
+  ProjectDetail,
   ProjectOutput,
   ProjectsListOutput,
   Requirement,
@@ -1761,6 +1762,66 @@ export function outputObjectivesPretty(objectives: ObjectiveWithKeyResults[]): v
       console.log(`    ${krBadge} ${kr.title} ${chalk.gray(`${kr.currentValue}/${kr.targetValue} ${kr.unit}`)}`);
       console.log(chalk.gray(`      ID: ${kr.id}`));
     }
+  }
+  console.log();
+}
+
+// ─── Project detail output ─────────────────────────────────
+
+export function outputProjectJson(project: ProjectDetail): void {
+  console.log(JSON.stringify({
+    ...transformProject(project),
+    // The detail read has no `workspace` relation to expand, unlike the list
+    // read — so `transformProject` alone would emit `workspace: null` and no id
+    // at all, which reads as "personal project" rather than "not fetched".
+    workspaceId: project.workspaceId,
+    slug: project.slug ?? null,
+    productId: project.productId ?? null,
+    driId: project.driId ?? null,
+    dri: project.dri ?? null,
+    team: project.team ?? null,
+    goals: project.goals ?? [],
+    keyResults: project.keyResults?.map((k) => ({
+      id: k.keyResultId,
+      title: k.keyResult?.title ?? null,
+      goal: k.keyResult?.goal ?? null,
+    })) ?? [],
+    outcomes: project.outcomes ?? [],
+    actionCount: project.actions?.length ?? null,
+    createdAt: project.createdAt ? new Date(project.createdAt).toISOString() : null,
+  }, null, 2));
+}
+
+export function outputProjectPretty(project: ProjectDetail): void {
+  console.log(chalk.gray('─'.repeat(50)));
+  console.log(`\n${chalk.bold(project.name)}`);
+  console.log(chalk.gray(`  ID: ${project.id}`));
+  if (project.status) console.log(`  ${chalk.cyan('Status:')} ${project.status}`);
+  if (project.priority) console.log(`  ${chalk.magenta('Priority:')} ${project.priority}`);
+  if (project.workspace) {
+    console.log(`  ${chalk.yellow('Workspace:')} ${project.workspace.name} (${project.workspace.slug})`);
+  }
+  if (project.description) {
+    console.log(`  ${chalk.gray('Description:')} ${project.description.substring(0, 200)}${project.description.length > 200 ? '...' : ''}`);
+  }
+  if (project.dri) {
+    console.log(`  ${chalk.magenta('DRI:')} ${project.dri.name ?? project.dri.email ?? project.dri.id}`);
+  }
+  if (project.goals?.length) {
+    console.log(`  ${chalk.cyan('Objectives:')}`);
+    for (const g of project.goals) {
+      console.log(`    - #${g.id} ${g.title}`);
+    }
+  }
+  if (project.keyResults?.length) {
+    console.log(`  ${chalk.cyan('Key results:')}`);
+    for (const k of project.keyResults) {
+      const objective = k.keyResult?.goal ? chalk.gray(` (objective #${k.keyResult.goal.id})`) : '';
+      console.log(`    - ${k.keyResult?.title ?? k.keyResultId} ${chalk.gray(`[${k.keyResultId}]`)}${objective}`);
+    }
+  }
+  if (project.actions?.length) {
+    console.log(`  ${chalk.cyan('Actions:')} ${project.actions.length}`);
   }
   console.log();
 }

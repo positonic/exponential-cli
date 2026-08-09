@@ -130,14 +130,69 @@ exponential actions reschedule --ids id1,id2 --to 2026-08-10
 > would report 6 actions while 43 sat overdue. Pass `--due-only` for the
 > previous output shape.
 
+### Goals and OKRs
+
+Objectives are goals; they carry **integer** ids. Their key results carry CUIDs
+and live under `goals kr`.
+
+```bash
+# List a workspace's objectives, or the annual → quarterly cascade
+exponential goals list --workspace clear --period Q3-2026
+exponential goals list --workspace clear --tree
+exponential goals list --all-workspaces       # "what am I neglecting" is cross-workspace
+
+exponential goals get 46
+exponential goals create --workspace clear --title "Ship the CLI" --period Q3-2026
+
+# Close a quarter. set-status/close write ONLY the status column.
+exponential goals close --id 46                       # → completed
+exponential goals set-status --id 46 --status on-hold
+
+# Everything else is a partial update: fields you don't pass are left alone,
+# and "none" is how you clear one.
+exponential goals update --id 46 --title "Ship the CLI, properly"
+exponential goals update --id 46 --workspace none     # make it personal
+exponential goals reparent --id 47 --parent 46        # or --parent none
+exponential goals delete --id 46                      # refuses if it has key results
+
+exponential goals periods
+exponential goals stats --workspace clear --period Q3-2026
+
+# The quarter at a glance: objectives with their key results nested
+exponential okrs list --workspace clear
+```
+
+Key results:
+
+```bash
+exponential goals kr list --goal 46
+exponential goals kr list --workspace clear --status at-risk
+exponential goals kr create --goal 46 --title "Weekly active agents" --target 500 --unit count
+exponential goals kr checkin --id <cuid> --value 120 --note "post-launch bump"
+exponential goals kr update --id <cuid> --target 600
+exponential goals kr link --id <cuid> --feature <feature-cuid>   # or --project <cuid>
+exponential goals kr unlink --id <cuid> --project <cuid>
+exponential goals kr delete --id <cuid>
+```
+
 ### Projects
 
 ```bash
 # List all projects
 exponential projects list
 
-# List projects in a workspace
-exponential projects list --workspace <workspace-id>
+# List projects in a workspace (slug or CUID)
+exponential projects list --workspace clear
+
+# One project, with its objectives, key results, DRI and actions
+exponential projects get <cuid|slug>
+
+# Partial update — unnamed fields are preserved
+exponential projects update --id <cuid> --name "KR support" --status COMPLETED
+exponential projects update --id <cuid> --product none
+
+# Refuses while the project still has actions or OKR links
+exponential projects delete --id <cuid> [--force]
 ```
 
 ### Workspaces

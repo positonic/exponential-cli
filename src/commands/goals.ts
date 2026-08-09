@@ -249,14 +249,24 @@ function createKeyResultsCommand(): Command {
         try {
           const status = validateKeyResultStatus(options.status);
           const client = getClient();
+          const goalId = options.goal ? parseGoalId(options.goal) : undefined;
+
           // No --workspace and no --goal keeps this the caller's personal list;
-          // resolving a default workspace here would silently widen it.
-          const workspaceId = options.workspace
-            ? await resolveWorkspaceId(client, options.workspace)
-            : undefined;
+          // resolving a default workspace here would silently widen it. With a
+          // --goal, borrow that objective's own workspace: an unscoped
+          // `okr.getAll` is owner-scoped server-side, so "the key results on
+          // objective #48" comes back empty for anyone but their author.
+          let workspaceId: string | undefined;
+          if (options.workspace) {
+            workspaceId = await resolveWorkspaceId(client, options.workspace);
+          } else if (goalId !== undefined) {
+            const goal = await client.goals.get(goalId);
+            workspaceId = goal.workspaceId ?? undefined;
+          }
+
           const list = await client.goals.keyResults.list({
             workspaceId,
-            goalId: options.goal ? parseGoalId(options.goal) : undefined,
+            goalId,
             period: options.period,
             status,
             onlyMine: options.mine,
@@ -865,6 +875,10 @@ export function createGoalsCommand(): Command {
     .option('--dri <userId>', 'Directly responsible individual (user ID)')
     .option('--status <status>', `Status: ${GOAL_WRITABLE_STATUSES.join(', ')}`)
     .option('--project <cuid>', 'Replace the project links with this project ("none" clears them)')
+    .option(
+      '-w, --workspace <slug|id|none>',
+      'Re-home the objective; "none" makes it personal',
+    )
     .action(
       async (
         options: {
@@ -876,6 +890,7 @@ export function createGoalsCommand(): Command {
           dri?: string;
           status?: string;
           project?: string;
+          workspace?: string;
         },
         cmd: Command,
       ) => {
@@ -887,8 +902,20 @@ export function createGoalsCommand(): Command {
           // an omitted flag stays `undefined` and is never sent.
           const clearable = (value: string | undefined) =>
             value === undefined ? undefined : value === 'none' ? null : value;
-          const goal = await getClient().goals.update({
+          const client = getClient();
+
+          // A slug has to become an id, so this one can't go through
+          // `clearable`. Omitted stays omitted: re-homing is exactly the write
+          // that orphaned goal 46 when it happened by accident.
+          let workspaceId: string | null | undefined;
+          if (options.workspace === 'none') workspaceId = null;
+          else if (options.workspace !== undefined) {
+            workspaceId = await resolveWorkspaceId(client, options.workspace);
+          }
+
+          const goal = await client.goals.update({
             id: parseGoalId(options.id),
+            workspaceId,
             title: options.title,
             description: clearable(options.description),
             whyThisGoal: clearable(options.why),
@@ -990,23 +1017,67 @@ export function createGoalsCommand(): Command {
 
   goals
     .command('delete')
-    .description('Delete an objective')
+    .description(
+      'Delete an objective. Refuses while it still has key results — deleting an ' +
+        'objective deletes them too (KeyResult.goalId cascades), taking their ' +
+        'check-in history with them.',
+    )
     .requiredOption('--id <n>', 'Objective ID (a number)')
-    .action(async (options: { id: string }, cmd: Command) => {
-      const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
-      const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
-      try {
-        const id = parseGoalId(options.id);
-        await getClient().goals.delete(id);
-        if (useJson) {
-          console.log(JSON.stringify({ deleted: true, id }, null, 2));
-        } else {
-          console.log('✓ Goal deleted');
+    .option(
+      '--with-key-results',
+      'Delete the objective and cascade-delete its key results (destructive)',
+    )
+    .action(
+      async (options: { id: string; withKeyResults?: boolean }, cmd: Command) => {
+        const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+        const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+        try {
+          const id = parseGoalId(options.id);
+          const client = getClient();
+          const goal = await client.goals.get(id);
+          const keyResults = goal.keyResults ?? [];
+          const children = goal.childGoals ?? [];
+
+          if (keyResults.length > 0 && !options.withKeyResults) {
+            const payload = {
+              deleted: false,
+              id,
+              reason: `has ${keyResults.length} key result(s)`,
+              keyResults: keyResults.map((kr) => ({ id: kr.id })),
+            };
+            if (useJson) console.log(JSON.stringify(payload, null, 2));
+            else {
+              console.error(
+                `Objective #${id} has ${keyResults.length} key result(s). Deleting it deletes them too.\n` +
+                  'Re-run with --with-key-results to go ahead, or move them with `goals kr update --id <cuid> --goal <other>`.',
+              );
+            }
+            process.exitCode = 1;
+            return;
+          }
+
+          await client.goals.delete(id);
+          const payload = {
+            deleted: true,
+            id,
+            keyResultsDeleted: keyResults.map((kr) => ({ id: kr.id })),
+            childGoalsDetached: children.map((c) => ({ id: c.id, title: c.title })),
+          };
+          if (useJson) console.log(JSON.stringify(payload, null, 2));
+          else {
+            console.log('✓ Goal deleted');
+            if (keyResults.length) {
+              console.log(`  ${keyResults.length} key result(s) deleted with it`);
+            }
+            if (children.length) {
+              console.log(`  ${children.length} sub-goal(s) left detached`);
+            }
+          }
+        } catch (error) {
+          handleError(error, useJson);
         }
-      } catch (error) {
-        handleError(error, useJson);
-      }
-    });
+      },
+    );
 
   goals
     .command('periods')
