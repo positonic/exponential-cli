@@ -50,6 +50,22 @@ function ticketLabel(ticket: Ticket): string {
   return ticket.shortId ?? (ticket.number != null ? `#${ticket.number}` : ticket.id);
 }
 
+/**
+ * `--goal` takes an objective's integer id, or "none" to unlink. Objectives are
+ * the only entity here keyed by an integer rather than a cuid.
+ */
+function parseFeatureGoalId(value: string | undefined): number | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === 'none') return null;
+  const id = Number(value);
+  if (!Number.isInteger(id)) {
+    throw new Error(
+      `--goal must be a whole number or "none", got "${value}". Find one with \`exponential goals list\`.`,
+    );
+  }
+  return id;
+}
+
 function validateFeatureStatus(value: string | undefined): FeatureStatus | undefined {
   if (!value) return undefined;
   if (!(FEATURE_STATUSES as string[]).includes(value)) {
@@ -182,6 +198,11 @@ export function createFeaturesCommand(): Command {
     .option('--priority <n>', 'Priority 0-4', parseInt)
     .option('--effort <n>', 'Effort estimate', parseFloat)
     .option('--area <id>', 'Area CUID ("none" to clear)')
+    .option(
+      '--goal <id|none>',
+      'Objective (goal) id this feature serves ("none" to clear). For progress ' +
+        'rollup, link the finer Feature→key-result edge with `goals kr link --feature`.',
+    )
     .action(
       async (
         options: {
@@ -193,6 +214,7 @@ export function createFeaturesCommand(): Command {
           priority?: number;
           effort?: number;
           area?: string;
+          goal?: string;
         },
         cmd: Command,
       ) => {
@@ -210,6 +232,7 @@ export function createFeaturesCommand(): Command {
             priority: options.priority,
             effort: options.effort,
             areaId: options.area === 'none' ? null : options.area,
+            goalId: parseFeatureGoalId(options.goal),
           });
           if (useJson) outputFeatureJson(feature);
           else {

@@ -10,6 +10,12 @@ import type {
   Epic,
   Feature,
   FeatureScope,
+  Goal,
+  GoalPeriod,
+  GoalStats,
+  GoalTreeNode,
+  KeyResult,
+  KeyResultCheckIn,
   KnowledgePage,
   Organization,
   OverdueTriage,
@@ -17,6 +23,7 @@ import type {
   PipelineStage,
   Product,
   Project,
+  ProjectDetail,
   ProjectOutput,
   ProjectsListOutput,
   Requirement,
@@ -1379,6 +1386,448 @@ export function outputScopesPretty(scopes: FeatureScope[]): void {
   console.log(chalk.gray('─'.repeat(50)));
   for (const s of scopes) {
     outputScopePretty(s);
+  }
+  console.log();
+}
+
+// ─── Goal (objective) output ───────────────────────────────
+
+function getGoalStatusColor(status: string): 'gray' | 'blue' | 'yellow' | 'green' | 'red' {
+  switch (status) {
+    case 'planned': return 'blue';
+    case 'active': return 'yellow';
+    case 'completed': return 'green';
+    case 'archived': return 'gray';
+    case 'on-hold': return 'red';
+    default: return 'gray';
+  }
+}
+
+function getHealthColor(health: string): 'gray' | 'green' | 'yellow' | 'red' {
+  switch (health) {
+    case 'on-track': return 'green';
+    case 'at-risk': return 'yellow';
+    case 'off-track': return 'red';
+    default: return 'gray';
+  }
+}
+
+/** `62%`, or `62% (manual)` when a progress override is in play. */
+function formatGoalProgress(goal: Goal): string | null {
+  if (goal.resolvedProgress == null) return null;
+  const pct = `${Math.round(goal.resolvedProgress)}%`;
+  return goal.isProgressManual ? `${pct} (manual)` : pct;
+}
+
+function transformGoal(goal: Goal): Record<string, unknown> {
+  return {
+    id: goal.id,
+    title: goal.title,
+    description: goal.description,
+    whyThisGoal: goal.whyThisGoal ?? null,
+    notes: goal.notes ?? null,
+    status: goal.status,
+    period: goal.period,
+    health: goal.healthOverride ?? goal.health,
+    healthIsOverride: goal.healthOverride != null,
+    progress: goal.resolvedProgress ?? null,
+    isProgressManual: goal.isProgressManual ?? false,
+    dueDate: goal.dueDate ? new Date(goal.dueDate).toISOString() : null,
+    workspaceId: goal.workspaceId,
+    workspace: goal.workspace ?? null,
+    parentGoalId: goal.parentGoalId,
+    parentGoal: goal.parentGoal ?? null,
+    childGoals: goal.childGoals ?? undefined,
+    lifeDomain: goal.lifeDomain ?? null,
+    userId: goal.userId,
+    driUserId: goal.driUserId,
+    driUser: goal.driUser ?? null,
+    projects: goal.projects?.map((p) => ({ id: p.id, name: p.name, status: p.status ?? null })),
+    keyResultCount: goal._count?.keyResults ?? goal.keyResults?.length ?? null,
+    keyResults: goal.keyResults ?? undefined,
+    createdAt: new Date(goal.createdAt).toISOString(),
+    updatedAt: new Date(goal.updatedAt).toISOString(),
+  };
+}
+
+export function outputGoalJson(goal: Goal): void {
+  console.log(JSON.stringify(transformGoal(goal), null, 2));
+}
+
+export function outputGoalPretty(goal: Goal): void {
+  console.log(chalk.gray('─'.repeat(50)));
+  const period = goal.period ? chalk.gray(` (${goal.period})`) : '';
+  console.log(
+    `\n${chalk[getGoalStatusColor(goal.status)](`[${goal.status}]`)} ${chalk.bold(`#${goal.id} ${goal.title}`)}${period}`,
+  );
+  const health = goal.healthOverride ?? goal.health;
+  if (health) {
+    const suffix = goal.healthOverride ? ' (override)' : '';
+    console.log(`  ${chalk.cyan('Health:')} ${chalk[getHealthColor(health)](health)}${suffix}`);
+  }
+  const progress = formatGoalProgress(goal);
+  if (progress) {
+    console.log(`  ${chalk.cyan('Progress:')} ${progress}`);
+  }
+  if (goal.description) {
+    console.log(`  ${chalk.gray('Description:')} ${goal.description.substring(0, 200)}${goal.description.length > 200 ? '...' : ''}`);
+  }
+  if (goal.whyThisGoal) {
+    console.log(`  ${chalk.gray('Why:')} ${goal.whyThisGoal.substring(0, 200)}${goal.whyThisGoal.length > 200 ? '...' : ''}`);
+  }
+  if (goal.dueDate) {
+    console.log(`  ${chalk.cyan('Due:')} ${formatDate(new Date(goal.dueDate))}`);
+  }
+  if (goal.workspace) {
+    console.log(`  ${chalk.yellow('Workspace:')} ${goal.workspace.name} (${goal.workspace.slug})`);
+  } else if (goal.workspaceId) {
+    console.log(`  ${chalk.yellow('Workspace:')} ${goal.workspaceId}`);
+  } else {
+    console.log(`  ${chalk.yellow('Workspace:')} ${chalk.gray('none (personal goal)')}`);
+  }
+  if (goal.driUser) {
+    console.log(`  ${chalk.magenta('DRI:')} ${goal.driUser.name ?? goal.driUser.id}`);
+  }
+  if (goal.parentGoal) {
+    console.log(`  ${chalk.cyan('Parent:')} #${goal.parentGoal.id} ${goal.parentGoal.title}`);
+  } else if (goal.parentGoalId != null) {
+    console.log(`  ${chalk.cyan('Parent:')} #${goal.parentGoalId}`);
+  }
+  if (goal.childGoals?.length) {
+    console.log(`  ${chalk.cyan('Sub-goals:')}`);
+    for (const child of goal.childGoals) {
+      console.log(`    - ${chalk[getGoalStatusColor(child.status)](`[${child.status}]`)} #${child.id} ${child.title}`);
+    }
+  }
+  if (goal.keyResults?.length) {
+    console.log(`  ${chalk.cyan('Key results:')} ${goal.keyResults.length}`);
+  }
+  if (goal.projects?.length) {
+    console.log(`  ${chalk.cyan('Projects:')}`);
+    for (const p of goal.projects) {
+      console.log(`    - ${p.name} ${chalk.gray(`(${p.id})`)}`);
+    }
+  }
+  console.log();
+}
+
+export function outputGoalsJson(goals: Goal[]): void {
+  console.log(JSON.stringify({
+    goals: goals.map(transformGoal),
+    total: goals.length,
+  }, null, 2));
+}
+
+export function outputGoalsPretty(goals: Goal[]): void {
+  if (goals.length === 0) {
+    console.log(chalk.gray('No goals found.'));
+    return;
+  }
+  console.log(chalk.bold(`\nGoals (${goals.length} total)`));
+  console.log(chalk.gray('─'.repeat(50)));
+  for (const g of goals) {
+    printGoalRow(g, 0);
+  }
+  console.log();
+}
+
+function printGoalRow(goal: Goal, depth: number): void {
+  const indent = '  '.repeat(depth + 1);
+  const statusBadge = chalk[getGoalStatusColor(goal.status)](`[${goal.status}]`);
+  const bits = [
+    goal.period,
+    formatGoalProgress(goal),
+    goal._count?.keyResults != null || goal.keyResults
+      ? `${goal._count?.keyResults ?? goal.keyResults?.length ?? 0} KR`
+      : null,
+    goal.healthOverride ?? goal.health,
+  ].filter(Boolean);
+  const suffix = bits.length ? chalk.gray(` — ${bits.join(' · ')}`) : '';
+  console.log(`${indent}${statusBadge} ${chalk.bold(`#${goal.id}`)} ${goal.title}${suffix}`);
+}
+
+/**
+ * The parent → child cascade. Recurses through `childGoals`, which the tree
+ * read nests (up to the server's 5-level cap) rather than flattening.
+ */
+export function outputGoalTreePretty(nodes: GoalTreeNode[]): void {
+  if (nodes.length === 0) {
+    console.log(chalk.gray('No goals found.'));
+    return;
+  }
+  console.log(chalk.bold('\nGoal tree'));
+  console.log(chalk.gray('─'.repeat(50)));
+  const walk = (node: GoalTreeNode, depth: number): void => {
+    printGoalRow(node, depth);
+    for (const child of (node.childGoals ?? []) as GoalTreeNode[]) {
+      walk(child, depth + 1);
+    }
+  };
+  for (const node of nodes) walk(node, 0);
+  console.log();
+}
+
+export function outputGoalTreeJson(nodes: GoalTreeNode[]): void {
+  const transform = (node: GoalTreeNode): Record<string, unknown> => ({
+    ...transformGoal(node),
+    childGoals: ((node.childGoals ?? []) as GoalTreeNode[]).map(transform),
+  });
+  console.log(JSON.stringify({
+    goals: nodes.map(transform),
+    total: nodes.length,
+  }, null, 2));
+}
+
+export function outputGoalPeriodsJson(periods: GoalPeriod[]): void {
+  console.log(JSON.stringify({ periods, total: periods.length }, null, 2));
+}
+
+export function outputGoalPeriodsPretty(periods: GoalPeriod[]): void {
+  if (periods.length === 0) {
+    console.log(chalk.gray('No periods found.'));
+    return;
+  }
+  console.log(chalk.bold(`\nPeriods (${periods.length})`));
+  console.log(chalk.gray('─'.repeat(50)));
+  for (const p of periods) {
+    console.log(`  ${chalk.bold(p.value)} ${chalk.gray(p.label)}`);
+  }
+  console.log();
+}
+
+export function outputGoalStatsJson(stats: GoalStats): void {
+  console.log(JSON.stringify({
+    ...stats,
+    periodEndDate: stats.periodEndDate ? new Date(stats.periodEndDate).toISOString() : null,
+  }, null, 2));
+}
+
+export function outputGoalStatsPretty(stats: GoalStats): void {
+  console.log(chalk.bold('\nOKR stats'));
+  console.log(chalk.gray('─'.repeat(50)));
+  console.log(`  ${chalk.cyan('Objectives:')} ${stats.totalObjectives}`);
+  console.log(`  ${chalk.cyan('Key results:')} ${stats.totalKeyResults} (${stats.completedKeyResults} achieved)`);
+  const b = stats.statusBreakdown;
+  if (b) {
+    console.log(
+      `  ${chalk.cyan('Status:')} ${chalk.green(`${b.onTrack} on-track`)} · ${chalk.yellow(`${b.atRisk} at-risk`)} · ${chalk.red(`${b.offTrack} off-track`)} · ${b.achieved} achieved`,
+    );
+  }
+  console.log(`  ${chalk.cyan('Average progress:')} ${Math.round(stats.averageProgress)}%`);
+  if (stats.averageConfidence != null) {
+    console.log(`  ${chalk.cyan('Average confidence:')} ${Math.round(stats.averageConfidence)}%`);
+  }
+  if (stats.periodEndDate) {
+    console.log(`  ${chalk.cyan('Period ends:')} ${formatDate(new Date(stats.periodEndDate))}`);
+  }
+  console.log();
+}
+
+// ─── Key result output ─────────────────────────────────────
+
+function getKeyResultStatusColor(status: string): 'gray' | 'green' | 'yellow' | 'red' | 'cyan' {
+  switch (status) {
+    case 'not-started': return 'gray';
+    case 'on-track': return 'green';
+    case 'at-risk': return 'yellow';
+    case 'off-track': return 'red';
+    case 'achieved': return 'cyan';
+    default: return 'gray';
+  }
+}
+
+/** Where `currentValue` sits between start and target, 0–100. */
+function keyResultProgress(kr: KeyResult): number | null {
+  const span = kr.targetValue - kr.startValue;
+  if (span === 0) return null;
+  const pct = ((kr.currentValue - kr.startValue) / span) * 100;
+  return Math.max(0, Math.min(100, Math.round(pct)));
+}
+
+function formatKeyResultValue(kr: KeyResult): string {
+  const unit = kr.unit === 'percent' ? '%' : '';
+  return `${kr.currentValue}${unit} / ${kr.targetValue}${unit}`;
+}
+
+function transformKeyResult(kr: KeyResult): Record<string, unknown> {
+  return {
+    id: kr.id,
+    goalId: kr.goalId,
+    goal: kr.goal ?? null,
+    title: kr.title,
+    description: kr.description,
+    status: kr.statusOverride ?? kr.status,
+    statusIsOverride: kr.statusOverride != null,
+    startValue: kr.startValue,
+    currentValue: kr.currentValue,
+    targetValue: kr.targetValue,
+    progress: keyResultProgress(kr),
+    unit: kr.unit,
+    unitLabel: kr.unitLabel ?? null,
+    confidence: kr.confidence ?? null,
+    period: kr.period,
+    workspaceId: kr.workspaceId,
+    driUserId: kr.driUserId,
+    projects: kr.projects?.map((p) => ({
+      projectId: p.projectId,
+      name: p.project?.name ?? null,
+    })),
+    features: kr.features?.map((f) => ({
+      featureId: f.featureId,
+      name: f.feature?.name ?? null,
+      ticketProgress: f.feature?.ticketProgress ?? null,
+    })),
+    createdAt: new Date(kr.createdAt).toISOString(),
+    updatedAt: new Date(kr.updatedAt).toISOString(),
+  };
+}
+
+export function outputKeyResultJson(kr: KeyResult): void {
+  console.log(JSON.stringify(transformKeyResult(kr), null, 2));
+}
+
+export function outputKeyResultPretty(kr: KeyResult): void {
+  console.log(chalk.gray('─'.repeat(50)));
+  const status = kr.statusOverride ?? kr.status;
+  const pct = keyResultProgress(kr);
+  console.log(`\n${chalk[getKeyResultStatusColor(status)](`[${status}]`)} ${chalk.bold(kr.title)}`);
+  console.log(chalk.gray(`  ID: ${kr.id}`));
+  console.log(
+    `  ${chalk.cyan('Value:')} ${formatKeyResultValue(kr)}${pct != null ? chalk.gray(` (${pct}%)`) : ''} ${chalk.gray(`[${kr.unitLabel ?? kr.unit}]`)}`,
+  );
+  console.log(`  ${chalk.cyan('Objective:')} ${kr.goal ? `#${kr.goal.id} ${kr.goal.title}` : `#${kr.goalId}`}`);
+  console.log(`  ${chalk.cyan('Period:')} ${kr.period}`);
+  if (kr.confidence != null) {
+    console.log(`  ${chalk.cyan('Confidence:')} ${kr.confidence}%`);
+  }
+  if (kr.description) {
+    console.log(`  ${chalk.gray('Description:')} ${kr.description.substring(0, 200)}${kr.description.length > 200 ? '...' : ''}`);
+  }
+  if (kr.projects?.length) {
+    console.log(`  ${chalk.cyan('Projects:')}`);
+    for (const p of kr.projects) {
+      console.log(`    - ${p.project?.name ?? p.projectId} ${chalk.gray(`(${p.projectId})`)}`);
+    }
+  }
+  if (kr.features?.length) {
+    console.log(`  ${chalk.cyan('Features:')}`);
+    for (const f of kr.features) {
+      const tp = f.feature?.ticketProgress;
+      const counts = tp ? chalk.gray(` — ${tp.done}/${tp.total} tickets`) : '';
+      console.log(`    - ${f.feature?.name ?? f.featureId} ${chalk.gray(`(${f.featureId})`)}${counts}`);
+    }
+  }
+  if (kr.checkIns?.length) {
+    console.log(`  ${chalk.cyan('Recent check-ins:')}`);
+    for (const c of kr.checkIns.slice(0, 5)) {
+      console.log(
+        `    - ${formatDate(new Date(c.createdAt))} ${c.previousValue} → ${c.newValue}${c.notes ? chalk.gray(` — ${c.notes}`) : ''}`,
+      );
+    }
+  }
+  console.log();
+}
+
+export function outputKeyResultsJson(keyResults: KeyResult[]): void {
+  console.log(JSON.stringify({
+    keyResults: keyResults.map(transformKeyResult),
+    total: keyResults.length,
+  }, null, 2));
+}
+
+export function outputKeyResultsPretty(keyResults: KeyResult[]): void {
+  if (keyResults.length === 0) {
+    console.log(chalk.gray('No key results found.'));
+    return;
+  }
+  console.log(chalk.bold(`\nKey results (${keyResults.length} total)`));
+  console.log(chalk.gray('─'.repeat(50)));
+  for (const kr of keyResults) {
+    const status = kr.statusOverride ?? kr.status;
+    const pct = keyResultProgress(kr);
+    const badge = chalk[getKeyResultStatusColor(status)](`[${status}]`);
+    const objective = kr.goal ? chalk.gray(` — #${kr.goal.id} ${kr.goal.title}`) : chalk.gray(` — #${kr.goalId}`);
+    console.log(
+      `  ${badge} ${chalk.bold(kr.title)} ${formatKeyResultValue(kr)}${pct != null ? chalk.gray(` (${pct}%)`) : ''}${objective}`,
+    );
+    console.log(chalk.gray(`    ID: ${kr.id}  Period: ${kr.period}`));
+  }
+  console.log();
+}
+
+export function outputCheckInJson(checkIn: KeyResultCheckIn): void {
+  console.log(JSON.stringify({
+    id: checkIn.id,
+    keyResultId: checkIn.keyResultId,
+    previousValue: checkIn.previousValue,
+    newValue: checkIn.newValue,
+    notes: checkIn.notes,
+    createdAt: new Date(checkIn.createdAt).toISOString(),
+  }, null, 2));
+}
+
+export function outputCheckInPretty(checkIn: KeyResultCheckIn): void {
+  console.log(
+    `  ${chalk.cyan('Value:')} ${checkIn.previousValue} → ${chalk.bold(String(checkIn.newValue))}`,
+  );
+  if (checkIn.notes) {
+    console.log(`  ${chalk.gray('Note:')} ${checkIn.notes}`);
+  }
+  console.log();
+}
+
+// ─── Project detail output ─────────────────────────────────
+
+export function outputProjectJson(project: ProjectDetail): void {
+  console.log(JSON.stringify({
+    ...transformProject(project),
+    slug: project.slug ?? null,
+    productId: project.productId ?? null,
+    driId: project.driId ?? null,
+    dri: project.dri ?? null,
+    team: project.team ?? null,
+    goals: project.goals ?? [],
+    keyResults: project.keyResults?.map((k) => ({
+      id: k.keyResultId,
+      title: k.keyResult?.title ?? null,
+      goal: k.keyResult?.goal ?? null,
+    })) ?? [],
+    outcomes: project.outcomes ?? [],
+    actionCount: project.actions?.length ?? null,
+    createdAt: project.createdAt ? new Date(project.createdAt).toISOString() : null,
+  }, null, 2));
+}
+
+export function outputProjectPretty(project: ProjectDetail): void {
+  console.log(chalk.gray('─'.repeat(50)));
+  console.log(`\n${chalk.bold(project.name)}`);
+  console.log(chalk.gray(`  ID: ${project.id}`));
+  if (project.status) console.log(`  ${chalk.cyan('Status:')} ${project.status}`);
+  if (project.priority) console.log(`  ${chalk.magenta('Priority:')} ${project.priority}`);
+  if (project.workspace) {
+    console.log(`  ${chalk.yellow('Workspace:')} ${project.workspace.name} (${project.workspace.slug})`);
+  }
+  if (project.description) {
+    console.log(`  ${chalk.gray('Description:')} ${project.description.substring(0, 200)}${project.description.length > 200 ? '...' : ''}`);
+  }
+  if (project.dri) {
+    console.log(`  ${chalk.magenta('DRI:')} ${project.dri.name ?? project.dri.email ?? project.dri.id}`);
+  }
+  if (project.goals?.length) {
+    console.log(`  ${chalk.cyan('Objectives:')}`);
+    for (const g of project.goals) {
+      console.log(`    - #${g.id} ${g.title}`);
+    }
+  }
+  if (project.keyResults?.length) {
+    console.log(`  ${chalk.cyan('Key results:')}`);
+    for (const k of project.keyResults) {
+      const objective = k.keyResult?.goal ? chalk.gray(` (objective #${k.keyResult.goal.id})`) : '';
+      console.log(`    - ${k.keyResult?.title ?? k.keyResultId} ${chalk.gray(`[${k.keyResultId}]`)}${objective}`);
+    }
+  }
+  if (project.actions?.length) {
+    console.log(`  ${chalk.cyan('Actions:')} ${project.actions.length}`);
   }
   console.log();
 }

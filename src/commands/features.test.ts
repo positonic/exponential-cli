@@ -44,16 +44,17 @@ function makeClient(options: {
 } = {}) {
   const getFeature = vi.fn().mockResolvedValue(options.feature ?? makeFeature());
   const deleteFeature = vi.fn().mockResolvedValue({ success: true });
+  const updateFeature = vi.fn().mockResolvedValue(options.feature ?? makeFeature());
   const listTickets = vi.fn().mockResolvedValue(options.tickets ?? []);
   const deleteTicket = vi.fn().mockResolvedValue({ success: true });
   const client = {
-    features: { get: getFeature, delete: deleteFeature },
+    features: { get: getFeature, delete: deleteFeature, update: updateFeature },
     tickets: { list: listTickets, delete: deleteTicket },
   };
   vi.mocked(clientModule.getClient).mockReturnValue(
     client as unknown as ReturnType<typeof clientModule.getClient>,
   );
-  return { client, getFeature, deleteFeature, listTickets, deleteTicket };
+  return { client, getFeature, deleteFeature, updateFeature, listTickets, deleteTicket };
 }
 
 // Run args as if typed after `exponential features`.
@@ -232,5 +233,59 @@ describe('features delete', () => {
     expect(deleteTicket).not.toHaveBeenCalled();
     expect(exit).toHaveBeenCalledWith(1);
     expect(JSON.stringify(jsonFromLog(log))).toContain('mutually exclusive');
+  });
+});
+
+describe('features update --goal', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    Object.defineProperty(process.stdout, 'isTTY', { value: false, configurable: true });
+    process.exitCode = undefined;
+  });
+  afterEach(() => {
+    process.exitCode = originalExitCode;
+  });
+
+  it('links the feature to an objective by its integer id', async () => {
+    const { updateFeature } = makeClient();
+
+    await run(['update', '--id', 'feat1', '--goal', '46']);
+
+    expect(updateFeature).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'feat1', goalId: 46 }),
+    );
+  });
+
+  it('"none" clears the objective', async () => {
+    const { updateFeature } = makeClient();
+
+    await run(['update', '--id', 'feat1', '--goal', 'none']);
+
+    expect(updateFeature).toHaveBeenCalledWith(
+      expect.objectContaining({ goalId: null }),
+    );
+  });
+
+  it('leaves the objective alone when --goal is absent', async () => {
+    const { updateFeature } = makeClient();
+
+    await run(['update', '--id', 'feat1', '--name', 'Renamed']);
+
+    const sent = updateFeature.mock.calls[0]![0] as Record<string, unknown>;
+    expect(sent.goalId).toBeUndefined();
+  });
+
+  it('rejects a cuid where an objective id belongs', async () => {
+    const { updateFeature } = makeClient();
+    const exit = vi
+      .spyOn(process, 'exit')
+      .mockImplementation((() => undefined) as never);
+
+    await run(['update', '--id', 'feat1', '--goal', 'cmjoko555']);
+
+    expect(updateFeature).not.toHaveBeenCalled();
+    expect(exit).toHaveBeenCalledWith(1);
   });
 });
