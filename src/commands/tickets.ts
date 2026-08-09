@@ -81,16 +81,27 @@ export function createTicketsCommand(): Command {
 
   tickets
     .command('list')
-    .description('List tickets in a product')
-    .option('--product <slug|id>', 'Product slug or CUID (required)')
+    .description(
+      'List tickets in a product, or workspace-wide when --pr or --branch is supplied',
+    )
+    .option(
+      '--product <slug|id>',
+      'Product slug or CUID (required unless --pr or --branch is supplied)',
+    )
     .option('--workspace <slug|id>', 'Workspace (required when --product is a slug)')
     .option('--status <status>', `Filter by status: ${TICKET_STATUSES.join(', ')}`)
     .option('--type <type>', `Filter by type: ${TICKET_TYPES.join(', ')}`)
     .option('--feature <id>', 'Filter by feature CUID')
     .option('--epic <id>', 'Filter by epic CUID')
     .option('--assignee <id>', 'Filter by assignee user ID')
-    .option('--pr <url>', 'Filter by Ticket.prUrl (exact match)')
-    .option('--branch <name>', 'Filter by Ticket.branchName (exact match)')
+    .option(
+      '--pr <url>',
+      'Workspace-wide lookup by Ticket.prUrl (exact match). Makes --product optional.',
+    )
+    .option(
+      '--branch <name>',
+      'Workspace-wide lookup by Ticket.branchName (exact match). Makes --product optional.',
+    )
     .option(
       '--label <slug-or-id>',
       'Filter to tickets carrying this label (repeatable; AND semantics)',
@@ -118,23 +129,15 @@ export function createTicketsCommand(): Command {
         try {
           const status = validateTicketStatus(options.status);
           const type = validateTicketType(options.type);
-          // `product.ticket.list` is product-scoped on the server — there is no
-          // workspace-wide ticket query, so --pr/--branch narrow a product's
-          // tickets rather than standing in for one.
-          if (!options.product) {
+          const hasWorkspaceFilter = Boolean(options.pr || options.branch);
+          if (!hasWorkspaceFilter && !options.product) {
             throw new Error(
-              '--product is required. Ticket lookup is product-scoped; --pr and --branch filter within a product.',
+              '--product is required unless --pr or --branch is supplied',
             );
           }
           const client = getClient();
           const workspaceId = await resolveWorkspaceId(client, options.workspace);
-          const productId = await resolveProductId(
-            client,
-            workspaceId,
-            options.product,
-          );
-          const list = await client.tickets.list({
-            productId,
+          const filters = {
             status,
             type,
             featureId: options.feature,
@@ -142,7 +145,37 @@ export function createTicketsCommand(): Command {
             assigneeId: options.assignee,
             prUrl: options.pr,
             branchName: options.branch,
-          });
+          };
+
+          // `product.ticket.list` is product-scoped on the server — there is no
+          // workspace-wide ticket query — so a --pr/--branch lookup with no
+          // --product sweeps every product in the workspace and merges. Without
+          // this the flag combination sent productId: undefined and the server
+          // rejected it outright. A PR URL or branch name identifies at most a
+          // handful of tickets, so the fan-out stays small.
+          let list;
+          if (options.product) {
+            const productId = await resolveProductId(
+              client,
+              workspaceId,
+              options.product,
+            );
+            list = await client.tickets.list({ productId, ...filters });
+          } else {
+            const products = await client.products.list(workspaceId);
+            const settled = await Promise.allSettled(
+              products.map((p) => client.tickets.list({ productId: p.id, ...filters })),
+            );
+            list = settled.flatMap((r) => (r.status === 'fulfilled' ? r.value : []));
+            // A product the caller can't read must not blank the whole lookup,
+            // but a silently short result is worse than a noisy one.
+            settled.forEach((r, i) => {
+              if (r.status !== 'rejected') return;
+              const reason =
+                r.reason instanceof Error ? r.reason.message : String(r.reason);
+              console.error(`Warning: skipped product ${products[i]!.slug}: ${reason}`);
+            });
+          }
           let filtered = list;
           if (options.label.length > 0) {
             const labelIds = new Set(

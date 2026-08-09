@@ -1,27 +1,36 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import type { MockInstance } from 'vitest';
-import { createGoalsCommand } from './goals.js';
+import { createGoalsCommand, createOkrsCommand } from './goals.js';
 import * as clientModule from '../client/index.js';
+import * as resolveModule from '../utils/resolve.js';
 
 vi.mock('../client/index.js', () => ({
   getClient: vi.fn(),
   isTRPCError: () => false,
 }));
 
+vi.mock('../utils/resolve.js', () => ({
+  resolveWorkspaceId: vi.fn(),
+  resolveWorkspace: vi.fn(),
+  resolveProductId: vi.fn(),
+}));
+
+const WS1 = { id: 'ws1', slug: 'clear', name: 'CLEAR' };
+const WS2 = { id: 'ws2', slug: 'personal', name: 'Personal' };
+
 function makeGoal(overrides: Record<string, unknown> = {}) {
   return {
     id: 46,
-    title: 'Ship the CLI',
+    title: 'Ship OKR support',
     description: null,
     status: 'active',
     period: 'Q3-2026',
     health: 'on-track',
-    lifeDomainId: null,
-    userId: 'u1',
-    driUserId: null,
+    dueDate: null,
     workspaceId: 'ws1',
     parentGoalId: null,
-    dueDate: null,
+    driUserId: 'u1',
+    userId: 'u1',
+    lifeDomainId: null,
     createdAt: new Date('2026-01-01'),
     updatedAt: new Date('2026-01-01'),
     ...overrides,
@@ -30,18 +39,18 @@ function makeGoal(overrides: Record<string, unknown> = {}) {
 
 function makeKeyResult(overrides: Record<string, unknown> = {}) {
   return {
-    id: 'kr1',
+    id: 'clkr1',
     goalId: 46,
-    title: 'Weekly active agents',
+    title: 'Weekly active teams 40 → 120',
     description: null,
     status: 'on-track',
-    startValue: 0,
-    currentValue: 20,
-    targetValue: 100,
+    startValue: 40,
+    currentValue: 90,
+    targetValue: 120,
     unit: 'count',
     period: 'Q3-2026',
     userId: 'u1',
-    driUserId: null,
+    driUserId: 'u1',
     workspaceId: 'ws1',
     createdAt: new Date('2026-01-01'),
     updatedAt: new Date('2026-01-01'),
@@ -49,81 +58,69 @@ function makeKeyResult(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function makeClient(options: {
-  goal?: Record<string, unknown>;
-  goals?: Record<string, unknown>[];
-  keyResults?: Record<string, unknown>[];
-} = {}) {
-  const calls = {
-    list: vi.fn().mockResolvedValue(options.goals ?? [makeGoal()]),
-    tree: vi.fn().mockResolvedValue(options.goals ?? [makeGoal()]),
-    get: vi.fn().mockResolvedValue(options.goal ?? makeGoal()),
+function makeClient(overrides: { goal?: Record<string, unknown> } = {}) {
+  const goals = {
+    list: vi.fn().mockResolvedValue([makeGoal()]),
+    tree: vi.fn().mockResolvedValue([]),
+    get: vi.fn().mockResolvedValue(overrides.goal ?? makeGoal()),
     create: vi.fn().mockResolvedValue(makeGoal()),
     update: vi.fn().mockResolvedValue(makeGoal()),
     setStatus: vi.fn().mockResolvedValue(makeGoal({ status: 'completed' })),
-    setParent: vi.fn().mockResolvedValue(makeGoal()),
-    deleteGoal: vi.fn().mockResolvedValue(makeGoal()),
-    periods: vi.fn().mockResolvedValue([]),
-    stats: vi.fn().mockResolvedValue({}),
-    krList: vi.fn().mockResolvedValue(options.keyResults ?? [makeKeyResult()]),
-    krGet: vi.fn().mockResolvedValue(makeKeyResult()),
-    krCreate: vi.fn().mockResolvedValue(makeKeyResult()),
-    krUpdate: vi.fn().mockResolvedValue(makeKeyResult()),
-    krCheckIn: vi.fn().mockResolvedValue({
-      id: 'ci1',
-      keyResultId: 'kr1',
-      previousValue: 20,
-      newValue: 40,
-      notes: null,
-      createdById: 'u1',
-      createdAt: new Date('2026-01-02'),
+    setParent: vi.fn().mockResolvedValue(makeGoal({ parentGoalId: 15 })),
+    delete: vi.fn().mockResolvedValue(makeGoal()),
+    periods: vi.fn().mockResolvedValue([{ value: 'Q3-2026', label: 'Q3 2026' }]),
+    stats: vi.fn().mockResolvedValue({
+      totalObjectives: 3,
+      totalKeyResults: 7,
+      completedKeyResults: 2,
+      statusBreakdown: { onTrack: 3, atRisk: 1, offTrack: 1, achieved: 2 },
+      averageProgress: 61,
+      averageConfidence: null,
+      periodEndDate: null,
     }),
-    krDelete: vi.fn().mockResolvedValue({ success: true }),
-    linkProject: vi.fn().mockResolvedValue({ success: true }),
-    linkFeature: vi.fn().mockResolvedValue({ success: true }),
-    unlinkProject: vi.fn().mockResolvedValue({ success: true }),
-    unlinkFeature: vi.fn().mockResolvedValue({ success: true }),
-    workspaceList: vi
-      .fn()
-      .mockResolvedValue([{ id: 'ws1', slug: 'clear', name: 'CLEAR' }]),
-  };
-
-  const client = {
-    goals: {
-      list: calls.list,
-      tree: calls.tree,
-      get: calls.get,
-      create: calls.create,
-      update: calls.update,
-      setStatus: calls.setStatus,
-      setParent: calls.setParent,
-      delete: calls.deleteGoal,
-      periods: calls.periods,
-      stats: calls.stats,
-    },
     keyResults: {
-      list: calls.krList,
-      get: calls.krGet,
-      create: calls.krCreate,
-      update: calls.krUpdate,
-      checkIn: calls.krCheckIn,
-      delete: calls.krDelete,
-      linkProject: calls.linkProject,
-      linkFeature: calls.linkFeature,
-      unlinkProject: calls.unlinkProject,
-      unlinkFeature: calls.unlinkFeature,
+      list: vi.fn().mockResolvedValue([makeKeyResult()]),
+      byObjective: vi.fn().mockResolvedValue([]),
+      get: vi.fn().mockResolvedValue(makeKeyResult()),
+      create: vi.fn().mockResolvedValue(makeKeyResult()),
+      update: vi.fn().mockResolvedValue(makeKeyResult()),
+      checkIn: vi.fn().mockResolvedValue({
+        id: 'ci1',
+        keyResultId: 'clkr1',
+        previousValue: 40,
+        newValue: 90,
+        notes: null,
+        createdAt: new Date('2026-01-01'),
+      }),
+      delete: vi.fn().mockResolvedValue({ success: true }),
+      linkProject: vi.fn().mockResolvedValue({ success: true }),
+      unlinkProject: vi.fn().mockResolvedValue({ success: true }),
+      linkFeature: vi.fn().mockResolvedValue({ success: true }),
+      unlinkFeature: vi.fn().mockResolvedValue({ success: true }),
     },
-    workspaces: { list: calls.workspaceList },
   };
+  const listWorkspaces = vi.fn().mockResolvedValue([WS1, WS2]);
+  const client = { goals, workspaces: { list: listWorkspaces } };
   vi.mocked(clientModule.getClient).mockReturnValue(
     client as unknown as ReturnType<typeof clientModule.getClient>,
   );
-  return calls;
+  vi.mocked(resolveModule.resolveWorkspaceId).mockResolvedValue('ws1');
+  vi.mocked(resolveModule.resolveWorkspace).mockResolvedValue(
+    WS1 as unknown as Awaited<ReturnType<typeof resolveModule.resolveWorkspace>>,
+  );
+  return Object.assign(goals, { listWorkspaces });
 }
 
 // Run args as if typed after `exponential goals`.
 async function run(args: string[]) {
   const cmd = createGoalsCommand();
+  cmd.exitOverride();
+  await cmd.parseAsync(args, { from: 'user' });
+}
+
+// Run args as if typed after `exponential okrs`.
+async function runOkrs(args: string[]) {
+  const cmd = createOkrsCommand();
   cmd.exitOverride();
   await cmd.parseAsync(args, { from: 'user' });
 }
@@ -138,17 +135,10 @@ function jsonFromLog(log: ReturnType<typeof vi.spyOn>): Record<string, unknown> 
 
 const originalExitCode = process.exitCode;
 
-/**
- * `handleError` ends the process, so every failure path has to run against a
- * stubbed exit — otherwise the first bad-input test takes the suite with it.
- */
-let exit: MockInstance<typeof process.exit>;
-
 beforeEach(() => {
   vi.restoreAllMocks();
   vi.spyOn(console, 'log').mockImplementation(() => undefined);
   vi.spyOn(console, 'error').mockImplementation(() => undefined);
-  exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
   Object.defineProperty(process.stdout, 'isTTY', { value: false, configurable: true });
   process.exitCode = undefined;
 });
@@ -157,182 +147,228 @@ afterEach(() => {
 });
 
 describe('goals list', () => {
-  it('resolves a workspace slug and passes the filters through', async () => {
-    const calls = makeClient();
+  it('resolves a workspace slug and forwards the filters', async () => {
+    const goals = makeClient();
 
     await run(['list', '--workspace', 'clear', '--period', 'Q3-2026', '--status', 'active']);
 
-    expect(calls.list).toHaveBeenCalledWith({
+    expect(resolveModule.resolveWorkspace).toHaveBeenCalledWith(
+      expect.anything(),
+      'clear',
+    );
+    expect(goals.list).toHaveBeenCalledWith({
       workspaceId: 'ws1',
       period: 'Q3-2026',
       status: 'active',
     });
   });
 
-  it('--tree reads the cascade instead of the flat list', async () => {
-    const calls = makeClient();
+  it('falls back to the default workspace when --workspace is omitted', async () => {
+    const goals = makeClient();
 
-    await run(['list', '--workspace', 'clear', '--tree']);
+    await run(['list']);
 
-    expect(calls.tree).toHaveBeenCalledWith({ workspaceId: 'ws1', status: undefined });
-    expect(calls.list).not.toHaveBeenCalled();
-  });
-
-  it('--mine drops the workspace scope so personal goals show up', async () => {
-    const calls = makeClient();
-
-    await run(['list', '--mine']);
-
-    expect(calls.workspaceList).not.toHaveBeenCalled();
-    expect(calls.list).toHaveBeenCalledWith({
-      workspaceId: undefined,
+    expect(resolveModule.resolveWorkspace).toHaveBeenCalledWith(
+      expect.anything(),
+      undefined,
+    );
+    expect(goals.list).toHaveBeenCalledWith({
+      workspaceId: 'ws1',
       period: undefined,
       status: undefined,
     });
   });
 
-  it('rejects a status the server would not accept', async () => {
+  it('emits JSON when piped', async () => {
     makeClient();
     const log = vi.spyOn(console, 'log');
 
-    await run(['list', '--workspace', 'clear', '--status', 'done']);
+    await run(['list', '--workspace', 'clear']);
 
-    expect(JSON.stringify(jsonFromLog(log))).toContain('Invalid goal status');
+    const out = jsonFromLog(log);
+    expect(out.total).toBe(1);
+    expect((out.goals as Record<string, unknown>[])[0]).toMatchObject({
+      id: 46,
+      title: 'Ship OKR support',
+      period: 'Q3-2026',
+    });
+  });
+
+  it('--tree reads the cascade instead of the flat list', async () => {
+    const goals = makeClient();
+
+    await run(['list', '--workspace', 'clear', '--tree', '--status', 'active']);
+
+    expect(goals.tree).toHaveBeenCalledWith({ workspaceId: 'ws1', status: 'active' });
+    expect(goals.list).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unknown status before making a call', async () => {
+    const goals = makeClient();
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+
+    await run(['list', '--workspace', 'clear', '--status', 'nope']);
+
+    expect(goals.list).not.toHaveBeenCalled();
     expect(exit).toHaveBeenCalledWith(1);
   });
 });
 
-describe('goals update', () => {
-  // The incident this command exists to prevent: a title-only update that also
-  // nulled `period` and `workspaceId`, orphaning the goal out of its workspace.
-  it('sends only the fields named on the command line', async () => {
-    const calls = makeClient();
+describe('goals update — never clobbers', () => {
+  // The reason this command exists in this shape. Under the old server
+  // behaviour `{id, title}` also nulled period and workspaceId, orphaning the
+  // goal out of its workspace. The CLI must send exactly the flags it was
+  // given — no re-sent fields, no synthesised nulls.
+  it('a title-only update sends only id and title', async () => {
+    const goals = makeClient();
 
     await run(['update', '--id', '46', '--title', 'Renamed']);
 
-    const sent = calls.update.mock.calls[0]![0] as Record<string, unknown>;
+    expect(goals.update).toHaveBeenCalledTimes(1);
+    const sent = goals.update.mock.calls[0]![0] as Record<string, unknown>;
     expect(sent.id).toBe(46);
     expect(sent.title).toBe('Renamed');
-    expect(sent.period).toBeUndefined();
-    expect(sent.workspaceId).toBeUndefined();
-    expect(sent.description).toBeUndefined();
-    expect(sent.status).toBeUndefined();
+    for (const key of ['period', 'workspaceId', 'projectId', 'description', 'driUserId']) {
+      expect(sent[key], `${key} must not be written`).toBeUndefined();
+    }
   });
 
-  it('treats "none" as an explicit clear', async () => {
-    const calls = makeClient();
+  it('does not read the goal first — nothing is re-sent from a fetch', async () => {
+    const goals = makeClient();
 
-    await run(['update', '--id', '46', '--period', 'none', '--description', 'none']);
+    await run(['update', '--id', '46', '--title', 'Renamed']);
 
-    const sent = calls.update.mock.calls[0]![0] as Record<string, unknown>;
+    expect(goals.get).not.toHaveBeenCalled();
+  });
+
+  it('"none" becomes an explicit null so a field can still be cleared', async () => {
+    const goals = makeClient();
+
+    await run(['update', '--id', '46', '--period', 'none', '--project', 'none']);
+
+    const sent = goals.update.mock.calls[0]![0] as Record<string, unknown>;
     expect(sent.period).toBeNull();
-    expect(sent.description).toBeNull();
+    expect(sent.projectId).toBeNull();
+    expect(sent.title).toBeUndefined();
   });
 
-  it('--workspace none makes the objective personal, a slug re-homes it', async () => {
-    const calls = makeClient();
-
-    await run(['update', '--id', '46', '--workspace', 'none']);
-    expect(
-      (calls.update.mock.calls[0]![0] as Record<string, unknown>).workspaceId,
-    ).toBeNull();
+  it('re-homes with a workspace slug, and "none" makes the objective personal', async () => {
+    const goals = makeClient();
 
     await run(['update', '--id', '46', '--workspace', 'clear']);
     expect(
-      (calls.update.mock.calls[1]![0] as Record<string, unknown>).workspaceId,
+      (goals.update.mock.calls[0]![0] as Record<string, unknown>).workspaceId,
     ).toBe('ws1');
+
+    await run(['update', '--id', '46', '--workspace', 'none']);
+    expect(
+      (goals.update.mock.calls[1]![0] as Record<string, unknown>).workspaceId,
+    ).toBeNull();
   });
 
-  it('points on-hold at set-status rather than silently failing', async () => {
-    const calls = makeClient();
+  it('refuses on-hold, pointing at set-status', async () => {
+    const goals = makeClient();
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
     const log = vi.spyOn(console, 'log');
 
     await run(['update', '--id', '46', '--status', 'on-hold']);
 
-    expect(calls.update).not.toHaveBeenCalled();
-    expect(JSON.stringify(jsonFromLog(log))).toContain('set-status');
-  });
-
-  it('rejects a non-numeric id before touching the API', async () => {
-    const calls = makeClient();
-
-    await run(['update', '--id', 'abc', '--title', 'Renamed']);
-
-    expect(calls.update).not.toHaveBeenCalled();
+    expect(goals.update).not.toHaveBeenCalled();
     expect(exit).toHaveBeenCalledWith(1);
+    expect(JSON.stringify(jsonFromLog(log))).toContain('set-status');
   });
 });
 
 describe('goals set-status and close', () => {
-  it('set-status writes only the status column', async () => {
-    const calls = makeClient();
+  it('set-status routes through the status-only path, never update', async () => {
+    const goals = makeClient();
+
+    await run(['set-status', '--id', '46', '--status', 'completed']);
+
+    expect(goals.setStatus).toHaveBeenCalledWith({ id: 46, status: 'completed' });
+    expect(goals.update).not.toHaveBeenCalled();
+  });
+
+  it('set-status accepts on-hold', async () => {
+    const goals = makeClient();
 
     await run(['set-status', '--id', '46', '--status', 'on-hold']);
 
-    expect(calls.setStatus).toHaveBeenCalledWith({ id: 46, status: 'on-hold' });
-    expect(calls.update).not.toHaveBeenCalled();
+    expect(goals.setStatus).toHaveBeenCalledWith({ id: 46, status: 'on-hold' });
   });
 
-  it('close defaults to completed and never routes through update', async () => {
-    const calls = makeClient();
+  it('close defaults to completed and also avoids update', async () => {
+    const goals = makeClient();
 
     await run(['close', '--id', '46']);
 
-    expect(calls.setStatus).toHaveBeenCalledWith({ id: 46, status: 'completed' });
-    expect(calls.update).not.toHaveBeenCalled();
+    expect(goals.setStatus).toHaveBeenCalledWith({ id: 46, status: 'completed' });
+    expect(goals.update).not.toHaveBeenCalled();
   });
 
-  it('close --status archived is allowed; anything else is refused', async () => {
-    const calls = makeClient();
+  it('close --status archived archives instead', async () => {
+    const goals = makeClient();
 
     await run(['close', '--id', '46', '--status', 'archived']);
-    expect(calls.setStatus).toHaveBeenCalledWith({ id: 46, status: 'archived' });
 
-    await run(['close', '--id', '46', '--status', 'active']);
-    expect(calls.setStatus).toHaveBeenCalledTimes(1);
-    expect(exit).toHaveBeenCalledWith(1);
+    expect(goals.setStatus).toHaveBeenCalledWith({ id: 46, status: 'archived' });
   });
 });
 
 describe('goals reparent', () => {
-  it('uses the single-column re-parent, not update', async () => {
-    const calls = makeClient();
+  it('routes through setParent, never update', async () => {
+    const goals = makeClient();
 
-    await run(['reparent', '--id', '47', '--parent', '46']);
+    await run(['reparent', '--id', '47', '--parent', '15']);
 
-    expect(calls.setParent).toHaveBeenCalledWith({ id: 47, parentGoalId: 46 });
-    expect(calls.update).not.toHaveBeenCalled();
+    expect(goals.setParent).toHaveBeenCalledWith({ id: 47, parentGoalId: 15 });
+    expect(goals.update).not.toHaveBeenCalled();
   });
 
-  it('detaches with --parent none', async () => {
-    const calls = makeClient();
+  it('--parent none detaches', async () => {
+    const goals = makeClient();
 
     await run(['reparent', '--id', '47', '--parent', 'none']);
 
-    expect(calls.setParent).toHaveBeenCalledWith({ id: 47, parentGoalId: null });
+    expect(goals.setParent).toHaveBeenCalledWith({ id: 47, parentGoalId: null });
+  });
+
+  it('rejects a non-numeric goal id with a readable message', async () => {
+    const goals = makeClient();
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    const log = vi.spyOn(console, 'log');
+
+    await run(['reparent', '--id', 'clabc', '--parent', '15']);
+
+    expect(goals.setParent).not.toHaveBeenCalled();
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(JSON.stringify(jsonFromLog(log))).toContain('whole number');
   });
 });
 
-describe('goals delete', () => {
-  it('deletes an objective with no key results', async () => {
-    const calls = makeClient({ goal: makeGoal({ keyResults: [] }) });
+// `KeyResult.goalId` cascades, so deleting an objective destroys its key
+// results and every check-in recorded against them. Nothing else in the CLI
+// can reconstruct that history, so the delete asks first.
+describe('goals delete guards the cascade', () => {
+  it('deletes an objective that has no key results', async () => {
+    const goals = makeClient({ goal: makeGoal({ keyResults: [] }) });
     const log = vi.spyOn(console, 'log');
 
     await run(['delete', '--id', '46']);
 
-    expect(calls.deleteGoal).toHaveBeenCalledWith(46);
+    expect(goals.delete).toHaveBeenCalledWith(46);
     expect(jsonFromLog(log)).toMatchObject({ deleted: true, id: 46 });
   });
 
-  it('refuses while key results would cascade away with it', async () => {
-    const calls = makeClient({
-      goal: makeGoal({ keyResults: [{ id: 'kr1' }, { id: 'kr2' }] }),
+  it('refuses while key results would go with it', async () => {
+    const goals = makeClient({
+      goal: makeGoal({ keyResults: [{ id: 'clkr1' }, { id: 'clkr2' }] }),
     });
     const log = vi.spyOn(console, 'log');
 
     await run(['delete', '--id', '46']);
 
-    expect(calls.deleteGoal).not.toHaveBeenCalled();
+    expect(goals.delete).not.toHaveBeenCalled();
     expect(process.exitCode).toBe(1);
     expect(jsonFromLog(log)).toMatchObject({
       deleted: false,
@@ -342,9 +378,9 @@ describe('goals delete', () => {
   });
 
   it('--with-key-results goes ahead and reports what went with it', async () => {
-    const calls = makeClient({
+    const goals = makeClient({
       goal: makeGoal({
-        keyResults: [{ id: 'kr1' }],
+        keyResults: [{ id: 'clkr1' }],
         childGoals: [{ id: 47, title: 'Sub', status: 'active', health: null }],
       }),
     });
@@ -352,24 +388,49 @@ describe('goals delete', () => {
 
     await run(['delete', '--id', '46', '--with-key-results']);
 
-    expect(calls.deleteGoal).toHaveBeenCalledWith(46);
+    expect(goals.delete).toHaveBeenCalledWith(46);
     const out = jsonFromLog(log);
-    expect(out).toMatchObject({ deleted: true, id: 46 });
     expect(out.keyResultsDeleted).toHaveLength(1);
     expect(out.childGoalsDetached).toHaveLength(1);
   });
 });
 
+describe('goals create', () => {
+  it('resolves the workspace slug and forwards the fields', async () => {
+    const goals = makeClient();
+
+    await run([
+      'create',
+      '--workspace', 'clear',
+      '--title', 'Grow activation',
+      '--period', 'Q3-2026',
+      '--parent', '15',
+    ]);
+
+    expect(goals.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceId: 'ws1',
+        title: 'Grow activation',
+        period: 'Q3-2026',
+        parentGoalId: 15,
+      }),
+    );
+  });
+});
+
 describe('goals kr', () => {
-  // An unscoped okr.getAll is owner-scoped server-side, so a colleague's key
-  // results on your objective would silently vanish from the list.
-  it('borrows the objective\'s workspace so every member\'s key results show', async () => {
-    const calls = makeClient();
+  // Verified live against objective 48: the unscoped read returned 0 of its 6
+  // key results, because `okr.getAll` without a workspace filters on the
+  // caller's userId. Borrowing the objective's own workspace is narrower than
+  // falling back to the default workspace, which would widen the list instead.
+  it('borrows the objective workspace so every member\'s key results show', async () => {
+    const goals = makeClient();
 
     await run(['kr', 'list', '--goal', '46']);
 
-    expect(calls.get).toHaveBeenCalledWith(46);
-    expect(calls.krList).toHaveBeenCalledWith({
+    expect(resolveModule.resolveWorkspaceId).not.toHaveBeenCalled();
+    expect(goals.get).toHaveBeenCalledWith(46);
+    expect(goals.keyResults.list).toHaveBeenCalledWith({
       workspaceId: 'ws1',
       goalId: 46,
       period: undefined,
@@ -378,107 +439,510 @@ describe('goals kr', () => {
     });
   });
 
-  it('lists workspace-wide when given a slug', async () => {
-    const calls = makeClient();
+  it('stays personal for a personal objective, and when nothing is named', async () => {
+    const goals = makeClient({ goal: makeGoal({ workspaceId: null }) });
+
+    await run(['kr', 'list', '--goal', '46']);
+    expect(goals.keyResults.list).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: undefined, goalId: 46 }),
+    );
+
+    await run(['kr', 'list']);
+    expect(resolveModule.resolveWorkspaceId).not.toHaveBeenCalled();
+    expect(goals.keyResults.list).toHaveBeenLastCalledWith(
+      expect.objectContaining({ workspaceId: undefined, goalId: undefined }),
+    );
+  });
+
+  it('resolves a workspace slug for a workspace-wide list', async () => {
+    const goals = makeClient();
 
     await run(['kr', 'list', '--workspace', 'clear', '--status', 'at-risk']);
 
-    expect(calls.krList).toHaveBeenCalledWith({
+    expect(goals.keyResults.list).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: 'ws1', status: 'at-risk' }),
+    );
+  });
+
+  it('inherits the objective period when --period is omitted on create', async () => {
+    const goals = makeClient();
+
+    await run(['kr', 'create', '--goal', '46', '--title', 'NPS 30 → 45', '--target', '45']);
+
+    expect(goals.get).toHaveBeenCalledWith(46);
+    expect(goals.keyResults.create).toHaveBeenCalledWith(
+      expect.objectContaining({ goalId: 46, targetValue: 45, period: 'Q3-2026' }),
+    );
+  });
+
+  it('requires --period when the objective has none', async () => {
+    const goals = makeClient({ goal: makeGoal({ period: null }) });
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    const log = vi.spyOn(console, 'log');
+
+    await run(['kr', 'create', '--goal', '46', '--title', 'NPS', '--target', '45']);
+
+    expect(goals.keyResults.create).not.toHaveBeenCalled();
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(JSON.stringify(jsonFromLog(log))).toContain('--period is required');
+  });
+
+  it('checkin sends the ergonomic shape', async () => {
+    const goals = makeClient();
+
+    await run(['kr', 'checkin', '--id', 'clkr1', '--value', '90', '--note', 'shipped']);
+
+    expect(goals.keyResults.checkIn).toHaveBeenCalledWith({
+      id: 'clkr1',
+      value: 90,
+      note: 'shipped',
+    });
+  });
+
+  it('update writes only the flags passed', async () => {
+    const goals = makeClient();
+
+    await run(['kr', 'update', '--id', 'clkr1', '--target', '150']);
+
+    const sent = goals.keyResults.update.mock.calls[0]![0] as Record<string, unknown>;
+    expect(sent).toMatchObject({ id: 'clkr1', targetValue: 150 });
+    expect(sent.title).toBeUndefined();
+    expect(sent.currentValue).toBeUndefined();
+  });
+
+  it('link takes exactly one of --project or --feature', async () => {
+    const goals = makeClient();
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+
+    await run(['kr', 'link', '--id', 'clkr1']);
+    expect(goals.keyResults.linkProject).not.toHaveBeenCalled();
+    expect(goals.keyResults.linkFeature).not.toHaveBeenCalled();
+    expect(exit).toHaveBeenCalledWith(1);
+
+    await run(['kr', 'link', '--id', 'clkr1', '--project', 'p1', '--feature', 'f1']);
+    expect(goals.keyResults.linkProject).not.toHaveBeenCalled();
+  });
+
+  it('links a project and a feature through their own procedures', async () => {
+    const goals = makeClient();
+
+    await run(['kr', 'link', '--id', 'clkr1', '--project', 'p1']);
+    await run(['kr', 'link', '--id', 'clkr1', '--feature', 'f1']);
+    await run(['kr', 'unlink', '--id', 'clkr1', '--project', 'p1']);
+    await run(['kr', 'unlink', '--id', 'clkr1', '--feature', 'f1']);
+
+    expect(goals.keyResults.linkProject).toHaveBeenCalledWith({
+      keyResultId: 'clkr1',
+      projectId: 'p1',
+    });
+    expect(goals.keyResults.linkFeature).toHaveBeenCalledWith({
+      keyResultId: 'clkr1',
+      featureId: 'f1',
+    });
+    expect(goals.keyResults.unlinkProject).toHaveBeenCalledWith({
+      keyResultId: 'clkr1',
+      projectId: 'p1',
+    });
+    expect(goals.keyResults.unlinkFeature).toHaveBeenCalledWith({
+      keyResultId: 'clkr1',
+      featureId: 'f1',
+    });
+  });
+
+  it('reports progress against the start → target span in JSON', async () => {
+    makeClient();
+    const log = vi.spyOn(console, 'log');
+
+    await run(['kr', 'list', '--goal', '46']);
+
+    const out = jsonFromLog(log);
+    // Span is start → target (40 → 120), not 0 → target: 50 of 80 = 63%.
+    expect((out.keyResults as Record<string, unknown>[])[0]).toMatchObject({
+      id: 'clkr1',
+      progress: 63,
+    });
+  });
+});
+
+describe('okrs command group', () => {
+  it('okrs list reads objectives with key results nested', async () => {
+    const goals = makeClient();
+
+    await runOkrs(['list', '--workspace', 'clear', '--period', 'Q3-2026']);
+
+    expect(goals.keyResults.byObjective).toHaveBeenCalledWith({
       workspaceId: 'ws1',
-      goalId: undefined,
-      period: undefined,
-      status: 'at-risk',
+      period: 'Q3-2026',
+      includePairedPeriod: undefined,
       onlyMine: undefined,
     });
   });
 
-  it('create inherits the objective\'s period when none is given', async () => {
-    const calls = makeClient();
+  it('okrs list --mine and --paired-period forward through', async () => {
+    const goals = makeClient();
 
-    await run(['kr', 'create', '--goal', '46', '--title', 'Signups', '--target', '500']);
+    await runOkrs(['list', '--workspace', 'clear', '--mine', '--paired-period']);
 
-    expect(calls.get).toHaveBeenCalledWith(46);
-    expect(calls.krCreate).toHaveBeenCalledWith(
-      expect.objectContaining({ goalId: 46, targetValue: 500, period: 'Q3-2026' }),
+    expect(goals.keyResults.byObjective).toHaveBeenCalledWith(
+      expect.objectContaining({ onlyMine: true, includePairedPeriod: true }),
     );
   });
 
-  it('create asks for --period when the objective has none', async () => {
-    const calls = makeClient({ goal: makeGoal({ period: null }) });
+  it('exposes the same kr subtree as goals', async () => {
+    const goals = makeClient();
+
+    await runOkrs(['kr', 'list', '--goal', '46']);
+
+    expect(goals.keyResults.list).toHaveBeenCalled();
+  });
+
+  it('okrs stats and periods work without a goals detour', async () => {
+    const goals = makeClient();
+
+    await runOkrs(['stats', '--workspace', 'clear', '--period', 'Q3-2026']);
+    await runOkrs(['periods']);
+
+    expect(goals.stats).toHaveBeenCalledWith({
+      workspaceId: 'ws1',
+      period: 'Q3-2026',
+    });
+    expect(goals.periods).toHaveBeenCalled();
+  });
+});
+
+describe('goals periods and stats', () => {
+  it('stats resolves the workspace and prints JSON when piped', async () => {
+    const goals = makeClient();
     const log = vi.spyOn(console, 'log');
 
-    await run(['kr', 'create', '--goal', '46', '--title', 'Signups', '--target', '500']);
+    await run(['stats', '--workspace', 'clear']);
 
-    expect(calls.krCreate).not.toHaveBeenCalled();
-    expect(JSON.stringify(jsonFromLog(log))).toContain('--period');
+    expect(goals.stats).toHaveBeenCalledWith({ workspaceId: 'ws1', period: undefined });
+    expect(jsonFromLog(log)).toMatchObject({ totalObjectives: 3, totalKeyResults: 7 });
   });
 
-  it('update sends only what was named', async () => {
-    const calls = makeClient();
+  it('periods needs no workspace', async () => {
+    const goals = makeClient();
 
-    await run(['kr', 'update', '--id', 'kr1', '--current', '40']);
+    await run(['periods']);
 
-    const sent = calls.krUpdate.mock.calls[0]![0] as Record<string, unknown>;
-    expect(sent).toMatchObject({ id: 'kr1', currentValue: 40 });
-    expect(sent.targetValue).toBeUndefined();
-    expect(sent.status).toBeUndefined();
+    expect(resolveModule.resolveWorkspaceId).not.toHaveBeenCalled();
+    expect(goals.periods).toHaveBeenCalled();
+  });
+});
+
+describe('spec contract: --all-workspaces', () => {
+  // "Am I neglecting a goal" is inherently cross-workspace, so the flag fans
+  // out over every workspace rather than making each caller write the loop.
+  it('goals list queries every workspace and concatenates', async () => {
+    const goals = makeClient();
+
+    await run(['list', '--all-workspaces']);
+
+    expect(goals.listWorkspaces).toHaveBeenCalled();
+    expect(resolveModule.resolveWorkspace).not.toHaveBeenCalled();
+    expect(goals.list).toHaveBeenCalledTimes(2);
+    expect(goals.list).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: 'ws1' }),
+    );
+    expect(goals.list).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: 'ws2' }),
+    );
   });
 
-  it('checkin records a value and a note', async () => {
-    const calls = makeClient();
+  it('labels each goal with the workspace it came from', async () => {
+    makeClient();
+    const log = vi.spyOn(console, 'log');
 
-    await run(['kr', 'checkin', '--id', 'kr1', '--value', '40', '--note', 'shipped v2']);
+    await run(['list', '--all-workspaces']);
 
-    expect(calls.krCheckIn).toHaveBeenCalledWith({
-      id: 'kr1',
-      value: 40,
-      note: 'shipped v2',
-    });
+    const rows = jsonFromLog(log).goals as Record<string, unknown>[];
+    expect(rows).toHaveLength(2);
+    expect(rows.map((g) => (g.workspace as { slug: string }).slug)).toEqual([
+      'clear',
+      'personal',
+    ]);
   });
 
-  it('rejects a non-numeric value', async () => {
-    const calls = makeClient();
+  it('okrs list fans out too', async () => {
+    const goals = makeClient();
 
-    await run(['kr', 'checkin', '--id', 'kr1', '--value', 'lots']);
+    await runOkrs(['list', '--all-workspaces']);
 
-    expect(calls.krCheckIn).not.toHaveBeenCalled();
+    expect(goals.keyResults.byObjective).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects --all-workspaces combined with --workspace', async () => {
+    const goals = makeClient();
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    const log = vi.spyOn(console, 'log');
+
+    await run(['list', '--all-workspaces', '--workspace', 'clear']);
+
+    expect(goals.list).not.toHaveBeenCalled();
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(JSON.stringify(jsonFromLog(log))).toContain('mutually exclusive');
+  });
+
+  it('-w is accepted as shorthand for --workspace', async () => {
+    const goals = makeClient();
+
+    await run(['list', '-w', 'clear']);
+
+    expect(resolveModule.resolveWorkspace).toHaveBeenCalledWith(
+      expect.anything(),
+      'clear',
+    );
+    expect(goals.list).toHaveBeenCalled();
+  });
+});
+
+describe('spec contract: okrs list period default and status filter', () => {
+  it('defaults to the current quarter', async () => {
+    const goals = makeClient();
+    const now = new Date();
+    const expected = `Q${Math.floor(now.getMonth() / 3) + 1}-${now.getFullYear()}`;
+
+    await runOkrs(['list', '--workspace', 'clear']);
+
+    expect(goals.keyResults.byObjective).toHaveBeenCalledWith(
+      expect.objectContaining({ period: expected }),
+    );
+  });
+
+  it('--period all opts out of the default', async () => {
+    const goals = makeClient();
+
+    await runOkrs(['list', '--workspace', 'clear', '--period', 'all']);
+
+    expect(goals.keyResults.byObjective).toHaveBeenCalledWith(
+      expect.objectContaining({ period: undefined }),
+    );
+  });
+
+  // --status is a key-result filter, and an objective with no matching key
+  // result is noise in a "what's off-track" view, so it drops out entirely.
+  it('--status keeps only matching key results and drops emptied objectives', async () => {
+    const goals = makeClient();
+    goals.keyResults.byObjective.mockResolvedValue([
+      {
+        id: 1,
+        title: 'Mixed',
+        status: 'active',
+        period: 'Q3-2026',
+        health: null,
+        description: null,
+        workspaceId: 'ws1',
+        driUserId: null,
+        parentGoalId: null,
+        progress: 0,
+        statusCounts: { 'on-track': 1, 'at-risk': 0, 'off-track': 1, achieved: 0 },
+        keyResults: [
+          makeKeyResult({ id: 'kr-ok', status: 'on-track' }),
+          makeKeyResult({ id: 'kr-bad', status: 'off-track' }),
+        ],
+      },
+      {
+        id: 2,
+        title: 'All fine',
+        status: 'active',
+        period: 'Q3-2026',
+        health: null,
+        description: null,
+        workspaceId: 'ws1',
+        driUserId: null,
+        parentGoalId: null,
+        progress: 0,
+        statusCounts: { 'on-track': 1, 'at-risk': 0, 'off-track': 0, achieved: 0 },
+        keyResults: [makeKeyResult({ id: 'kr-fine', status: 'on-track' })],
+      },
+    ]);
+    const log = vi.spyOn(console, 'log');
+
+    await runOkrs(['list', '--workspace', 'clear', '--status', 'off-track']);
+
+    const out = jsonFromLog(log);
+    const objectives = out.objectives as Record<string, unknown>[];
+    expect(objectives).toHaveLength(1);
+    expect(objectives[0]!.id).toBe(1);
+    expect((objectives[0]!.keyResults as { id: string }[]).map((k) => k.id)).toEqual([
+      'kr-bad',
+    ]);
+    expect(out.totalKeyResults).toBe(1);
+  });
+
+  it('rejects an unknown key-result status', async () => {
+    const goals = makeClient();
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+
+    await runOkrs(['list', '--workspace', 'clear', '--status', 'nope']);
+
+    expect(goals.keyResults.byObjective).not.toHaveBeenCalled();
     expect(exit).toHaveBeenCalledWith(1);
   });
+});
 
-  it('links a project and a feature', async () => {
-    const calls = makeClient();
-
-    await run(['kr', 'link', '--id', 'kr1', '--project', 'p1']);
-    expect(calls.linkProject).toHaveBeenCalledWith({
-      keyResultId: 'kr1',
-      projectId: 'p1',
-    });
-
-    await run(['kr', 'link', '--id', 'kr1', '--feature', 'f1']);
-    expect(calls.linkFeature).toHaveBeenCalledWith({
-      keyResultId: 'kr1',
-      featureId: 'f1',
-    });
-  });
-
-  it('link with neither target explains what it wants', async () => {
-    const calls = makeClient();
+describe('spec contract: JSON fields', () => {
+  it('goals list carries progress, workspace and the project join', async () => {
+    const goals = makeClient();
+    goals.list.mockResolvedValue([
+      makeGoal({
+        resolvedProgress: 61,
+        isProgressManual: false,
+        workspace: WS1,
+        lifeDomain: { id: 3, title: 'Career/Business' },
+        projects: [{ id: 'prj_launch', name: 'Q3 Launch', slug: 'q3-launch' }],
+        _count: { keyResults: 3 },
+      }),
+    ]);
     const log = vi.spyOn(console, 'log');
 
-    await run(['kr', 'link', '--id', 'kr1']);
+    await run(['list', '--workspace', 'clear']);
 
-    expect(calls.linkProject).not.toHaveBeenCalled();
-    expect(JSON.stringify(jsonFromLog(log))).toContain('--project');
+    expect((jsonFromLog(log).goals as Record<string, unknown>[])[0]).toMatchObject({
+      id: 46,
+      progress: 61,
+      isProgressManual: false,
+      workspace: { id: 'ws1', slug: 'clear', name: 'CLEAR' },
+      lifeDomain: { id: 3, title: 'Career/Business' },
+      projects: [{ id: 'prj_launch', name: 'Q3 Launch', slug: 'q3-launch' }],
+      keyResultCount: 3,
+    });
   });
 
-  it('unlinks a feature', async () => {
-    const calls = makeClient();
+  it('reports progress as null rather than 0 when the server omits it', async () => {
+    makeClient();
+    const log = vi.spyOn(console, 'log');
 
-    await run(['kr', 'unlink', '--id', 'kr1', '--feature', 'f1']);
+    await run(['list', '--workspace', 'clear']);
 
-    expect(calls.unlinkFeature).toHaveBeenCalledWith({
-      keyResultId: 'kr1',
-      featureId: 'f1',
+    const row = (jsonFromLog(log).goals as Record<string, unknown>[])[0]!;
+    expect(row.progress).toBeNull();
+    expect(row.isProgressManual).toBe(false);
+  });
+
+  it('key results carry unitLabel, periodEnd and a derived lastCheckInAt', async () => {
+    const goals = makeClient();
+    goals.keyResults.list.mockResolvedValue([
+      makeKeyResult({
+        unitLabel: 'deals',
+        periodEnd: new Date('2026-09-30T00:00:00Z'),
+        // Deliberately out of order: lastCheckInAt is the newest, not the first.
+        checkIns: [
+          { id: 'c1', createdAt: new Date('2026-07-02T09:14:00Z') },
+          { id: 'c2', createdAt: new Date('2026-07-20T09:14:00Z') },
+          { id: 'c3', createdAt: new Date('2026-07-11T09:14:00Z') },
+        ],
+      }),
+    ]);
+    const log = vi.spyOn(console, 'log');
+
+    await run(['kr', 'list', '--goal', '46']);
+
+    expect((jsonFromLog(log).keyResults as Record<string, unknown>[])[0]).toMatchObject({
+      unitLabel: 'deals',
+      periodEnd: '2026-09-30T00:00:00.000Z',
+      lastCheckInAt: '2026-07-20T09:14:00.000Z',
     });
+  });
+
+  it('reports lastCheckInAt as null for a key result never checked in', async () => {
+    makeClient();
+    const log = vi.spyOn(console, 'log');
+
+    await run(['kr', 'list', '--goal', '46']);
+
+    expect((jsonFromLog(log).keyResults as Record<string, unknown>[])[0]).toMatchObject({
+      lastCheckInAt: null,
+      unitLabel: null,
+      periodEnd: null,
+    });
+  });
+});
+
+describe('cross-workspace fan-out keeps partial results', () => {
+  // A sweep exists to answer "what am I neglecting". One workspace the caller
+  // can no longer read must not take the others with it — byObjective throws
+  // FORBIDDEN for a non-member, and membership lapses.
+  it('reports the goals it could read and warns about the one it could not', async () => {
+    const goals = makeClient();
+    goals.list
+      .mockResolvedValueOnce([makeGoal({ id: 1 })])
+      .mockRejectedValueOnce(new Error('You are not a member of this workspace'));
+    const log = vi.spyOn(console, 'log');
+    const error = vi.spyOn(console, 'error');
+
+    await run(['list', '--all-workspaces']);
+
+    const rows = jsonFromLog(log).goals as Record<string, unknown>[];
+    expect(rows.map((g) => g.id)).toEqual([1]);
+    const warned = error.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned).toContain('skipped workspace personal');
+    expect(warned).toContain('not a member');
+  });
+
+  it('still fails loudly when every workspace fails', async () => {
+    const goals = makeClient();
+    goals.list.mockRejectedValue(new Error('token expired'));
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    const log = vi.spyOn(console, 'log');
+
+    await run(['list', '--all-workspaces']);
+
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(JSON.stringify(jsonFromLog(log))).toContain('token expired');
+  });
+
+  it('a single-workspace read still surfaces its error rather than an empty list', async () => {
+    const goals = makeClient();
+    goals.list.mockRejectedValue(new Error('workspace is gone'));
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    const log = vi.spyOn(console, 'log');
+
+    await run(['list', '--workspace', 'clear']);
+
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(JSON.stringify(jsonFromLog(log))).toContain('workspace is gone');
+  });
+
+  it('okrs list isolates per workspace too', async () => {
+    const goals = makeClient();
+    goals.keyResults.byObjective
+      .mockResolvedValueOnce([])
+      .mockRejectedValueOnce(new Error('forbidden'));
+    const error = vi.spyOn(console, 'error');
+
+    await runOkrs(['list', '--all-workspaces']);
+
+    expect(error.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+      'skipped workspace personal',
+    );
+  });
+});
+
+describe('goals kr create reuses the objective it already read', () => {
+  it("passes the objective's workspace so the SDK need not re-read it", async () => {
+    const goals = makeClient();
+
+    await run(['kr', 'create', '--goal', '46', '--title', 'NPS', '--target', '45']);
+
+    expect(goals.get).toHaveBeenCalledTimes(1);
+    expect(goals.keyResults.create).toHaveBeenCalledWith(
+      expect.objectContaining({ goalId: 46, workspaceId: 'ws1' }),
+    );
+  });
+
+  it('leaves the workspace to the SDK when --period made the read unnecessary', async () => {
+    const goals = makeClient();
+
+    await run([
+      'kr', 'create', '--goal', '46', '--title', 'NPS',
+      '--target', '45', '--period', 'Q3-2026',
+    ]);
+
+    expect(goals.get).not.toHaveBeenCalled();
+    expect(goals.keyResults.create).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: undefined }),
+    );
   });
 });

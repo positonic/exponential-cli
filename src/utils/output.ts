@@ -17,6 +17,7 @@ import type {
   KeyResult,
   KeyResultCheckIn,
   KnowledgePage,
+  ObjectiveWithKeyResults,
   Organization,
   OverdueTriage,
   Pipeline,
@@ -1391,6 +1392,11 @@ export function outputScopesPretty(scopes: FeatureScope[]): void {
 }
 
 // ─── Goal (objective) output ───────────────────────────────
+//
+// An objective is a `Goal` with an INTEGER id; its key results are cuid-keyed
+// `KeyResult` rows. Both are printed here, kept apart on purpose — the tRPC
+// router mounted at `okr` is the key-result router, and conflating the two is
+// the mistake this whole surface exists to stop people repeating.
 
 function getGoalStatusColor(status: string): 'gray' | 'blue' | 'yellow' | 'green' | 'red' {
   switch (status) {
@@ -1403,20 +1409,25 @@ function getGoalStatusColor(status: string): 'gray' | 'blue' | 'yellow' | 'green
   }
 }
 
-function getHealthColor(health: string): 'gray' | 'green' | 'yellow' | 'red' {
-  switch (health) {
+function getKeyResultStatusColor(status: string): 'gray' | 'blue' | 'yellow' | 'green' | 'red' {
+  switch (status) {
+    case 'not-started': return 'gray';
     case 'on-track': return 'green';
     case 'at-risk': return 'yellow';
     case 'off-track': return 'red';
+    case 'achieved': return 'green';
     default: return 'gray';
   }
 }
 
-/** `62%`, or `62% (manual)` when a progress override is in play. */
-function formatGoalProgress(goal: Goal): string | null {
-  if (goal.resolvedProgress == null) return null;
-  const pct = `${Math.round(goal.resolvedProgress)}%`;
-  return goal.isProgressManual ? `${pct} (manual)` : pct;
+/** Percent of the start → target span covered, clamped to 0–100. */
+function keyResultProgress(kr: KeyResult): number {
+  const range = kr.targetValue - kr.startValue;
+  if (range <= 0) return 0;
+  return Math.max(
+    0,
+    Math.min(100, Math.round(((kr.currentValue - kr.startValue) / range) * 100)),
+  );
 }
 
 function transformGoal(goal: Goal): Record<string, unknown> {
@@ -1424,29 +1435,30 @@ function transformGoal(goal: Goal): Record<string, unknown> {
     id: goal.id,
     title: goal.title,
     description: goal.description,
-    whyThisGoal: goal.whyThisGoal ?? null,
-    notes: goal.notes ?? null,
     status: goal.status,
     period: goal.period,
     health: goal.healthOverride ?? goal.health,
-    healthIsOverride: goal.healthOverride != null,
+    // Effective progress: manual override, else the key-result mean, else null
+    // for "no signal". Undefined (rather than null) means the server predates
+    // the field — report null rather than inventing a 0.
     progress: goal.resolvedProgress ?? null,
     isProgressManual: goal.isProgressManual ?? false,
     dueDate: goal.dueDate ? new Date(goal.dueDate).toISOString() : null,
     workspaceId: goal.workspaceId,
-    workspace: goal.workspace ?? null,
+    workspace: goal.workspace
+      ? { id: goal.workspace.id, slug: goal.workspace.slug, name: goal.workspace.name }
+      : null,
     parentGoalId: goal.parentGoalId,
-    parentGoal: goal.parentGoal ?? null,
-    childGoals: goal.childGoals ?? undefined,
-    lifeDomain: goal.lifeDomain ?? null,
-    userId: goal.userId,
     driUserId: goal.driUserId,
-    driUser: goal.driUser ?? null,
-    projects: goal.projects?.map((p) => ({ id: p.id, name: p.name, status: p.status ?? null })),
+    lifeDomain: goal.lifeDomain ? { id: goal.lifeDomain.id, title: goal.lifeDomain.title } : null,
+    // THE JOIN: actions carry a projectId and goals carry projects, so inverting
+    // this map is what ties a day's work back to an objective. Never elided.
+    projects:
+      goal.projects?.map((p) => ({ id: p.id, name: p.name, slug: p.slug ?? null })) ?? [],
+    childGoals: goal.childGoals?.map((c) => ({ id: c.id, title: c.title, status: c.status })) ?? [],
     keyResultCount: goal._count?.keyResults ?? goal.keyResults?.length ?? null,
-    keyResults: goal.keyResults ?? undefined,
-    createdAt: new Date(goal.createdAt).toISOString(),
-    updatedAt: new Date(goal.updatedAt).toISOString(),
+    createdAt: goal.createdAt ? new Date(goal.createdAt).toISOString() : null,
+    updatedAt: goal.updatedAt ? new Date(goal.updatedAt).toISOString() : null,
   };
 }
 
@@ -1456,57 +1468,22 @@ export function outputGoalJson(goal: Goal): void {
 
 export function outputGoalPretty(goal: Goal): void {
   console.log(chalk.gray('─'.repeat(50)));
-  const period = goal.period ? chalk.gray(` (${goal.period})`) : '';
-  console.log(
-    `\n${chalk[getGoalStatusColor(goal.status)](`[${goal.status}]`)} ${chalk.bold(`#${goal.id} ${goal.title}`)}${period}`,
-  );
+  const badge = chalk[getGoalStatusColor(goal.status)](`[${goal.status}]`);
+  console.log(`\n${badge} ${chalk.bold(goal.title)} ${chalk.gray(`#${goal.id}`)}`);
+  if (goal.period) console.log(`  ${chalk.gray('Period:')} ${goal.period}`);
   const health = goal.healthOverride ?? goal.health;
-  if (health) {
-    const suffix = goal.healthOverride ? ' (override)' : '';
-    console.log(`  ${chalk.cyan('Health:')} ${chalk[getHealthColor(health)](health)}${suffix}`);
-  }
-  const progress = formatGoalProgress(goal);
-  if (progress) {
-    console.log(`  ${chalk.cyan('Progress:')} ${progress}`);
-  }
+  if (health) console.log(`  ${chalk.gray('Health:')} ${health}`);
   if (goal.description) {
     console.log(`  ${chalk.gray('Description:')} ${goal.description.substring(0, 200)}${goal.description.length > 200 ? '...' : ''}`);
   }
-  if (goal.whyThisGoal) {
-    console.log(`  ${chalk.gray('Why:')} ${goal.whyThisGoal.substring(0, 200)}${goal.whyThisGoal.length > 200 ? '...' : ''}`);
-  }
-  if (goal.dueDate) {
-    console.log(`  ${chalk.cyan('Due:')} ${formatDate(new Date(goal.dueDate))}`);
-  }
-  if (goal.workspace) {
-    console.log(`  ${chalk.yellow('Workspace:')} ${goal.workspace.name} (${goal.workspace.slug})`);
-  } else if (goal.workspaceId) {
-    console.log(`  ${chalk.yellow('Workspace:')} ${goal.workspaceId}`);
-  } else {
-    console.log(`  ${chalk.yellow('Workspace:')} ${chalk.gray('none (personal goal)')}`);
-  }
-  if (goal.driUser) {
-    console.log(`  ${chalk.magenta('DRI:')} ${goal.driUser.name ?? goal.driUser.id}`);
-  }
   if (goal.parentGoal) {
-    console.log(`  ${chalk.cyan('Parent:')} #${goal.parentGoal.id} ${goal.parentGoal.title}`);
-  } else if (goal.parentGoalId != null) {
-    console.log(`  ${chalk.cyan('Parent:')} #${goal.parentGoalId}`);
-  }
-  if (goal.childGoals?.length) {
-    console.log(`  ${chalk.cyan('Sub-goals:')}`);
-    for (const child of goal.childGoals) {
-      console.log(`    - ${chalk[getGoalStatusColor(child.status)](`[${child.status}]`)} #${child.id} ${child.title}`);
-    }
-  }
-  if (goal.keyResults?.length) {
-    console.log(`  ${chalk.cyan('Key results:')} ${goal.keyResults.length}`);
+    console.log(`  ${chalk.gray('Parent:')} ${goal.parentGoal.title} ${chalk.gray(`#${goal.parentGoal.id}`)}`);
   }
   if (goal.projects?.length) {
-    console.log(`  ${chalk.cyan('Projects:')}`);
-    for (const p of goal.projects) {
-      console.log(`    - ${p.name} ${chalk.gray(`(${p.id})`)}`);
-    }
+    console.log(`  ${chalk.cyan('Projects:')} ${goal.projects.map((p) => p.name).join(', ')}`);
+  }
+  if (goal.childGoals?.length) {
+    console.log(`  ${chalk.cyan('Sub-goals:')} ${goal.childGoals.length}`);
   }
   console.log();
 }
@@ -1526,30 +1503,35 @@ export function outputGoalsPretty(goals: Goal[]): void {
   console.log(chalk.bold(`\nGoals (${goals.length} total)`));
   console.log(chalk.gray('─'.repeat(50)));
   for (const g of goals) {
-    printGoalRow(g, 0);
+    const badge = chalk[getGoalStatusColor(g.status)](`[${g.status}]`);
+    const period = g.period ? chalk.gray(` ${g.period}`) : '';
+    const krs = g._count?.keyResults ? chalk.gray(` — ${g._count.keyResults} KRs`) : '';
+    console.log(`  ${badge}${period} ${chalk.bold(g.title)}${krs}`);
+    console.log(chalk.gray(`    ID: ${g.id}`));
   }
   console.log();
 }
 
-function printGoalRow(goal: Goal, depth: number): void {
-  const indent = '  '.repeat(depth + 1);
-  const statusBadge = chalk[getGoalStatusColor(goal.status)](`[${goal.status}]`);
-  const bits = [
-    goal.period,
-    formatGoalProgress(goal),
-    goal._count?.keyResults != null || goal.keyResults
-      ? `${goal._count?.keyResults ?? goal.keyResults?.length ?? 0} KR`
-      : null,
-    goal.healthOverride ?? goal.health,
-  ].filter(Boolean);
-  const suffix = bits.length ? chalk.gray(` — ${bits.join(' · ')}`) : '';
-  console.log(`${indent}${statusBadge} ${chalk.bold(`#${goal.id}`)} ${goal.title}${suffix}`);
+function transformGoalTree(node: GoalTreeNode): Record<string, unknown> {
+  return {
+    ...transformGoal(node),
+    keyResults: node.keyResults?.map((kr) => ({
+      id: kr.id,
+      status: kr.status,
+      currentValue: kr.currentValue,
+      targetValue: kr.targetValue,
+    })) ?? [],
+    children: (node.childGoals as GoalTreeNode[] | undefined)?.map(transformGoalTree) ?? [],
+  };
 }
 
-/**
- * The parent → child cascade. Recurses through `childGoals`, which the tree
- * read nests (up to the server's 5-level cap) rather than flattening.
- */
+export function outputGoalTreeJson(nodes: GoalTreeNode[]): void {
+  console.log(JSON.stringify({
+    goals: nodes.map(transformGoalTree),
+    total: nodes.length,
+  }, null, 2));
+}
+
 export function outputGoalTreePretty(nodes: GoalTreeNode[]): void {
   if (nodes.length === 0) {
     console.log(chalk.gray('No goals found.'));
@@ -1557,8 +1539,14 @@ export function outputGoalTreePretty(nodes: GoalTreeNode[]): void {
   }
   console.log(chalk.bold('\nGoal tree'));
   console.log(chalk.gray('─'.repeat(50)));
+  // The annual → quarterly cascade is the thing people come to a tree for, so
+  // indent by depth rather than flattening.
   const walk = (node: GoalTreeNode, depth: number): void => {
-    printGoalRow(node, depth);
+    const pad = '  '.repeat(depth + 1);
+    const badge = chalk[getGoalStatusColor(node.status)](`[${node.status}]`);
+    const period = node.period ? chalk.gray(` ${node.period}`) : '';
+    const krs = node.keyResults?.length ? chalk.gray(` — ${node.keyResults.length} KRs`) : '';
+    console.log(`${pad}${depth > 0 ? '└ ' : ''}${badge}${period} ${chalk.bold(node.title)} ${chalk.gray(`#${node.id}`)}${krs}`);
     for (const child of (node.childGoals ?? []) as GoalTreeNode[]) {
       walk(child, depth + 1);
     }
@@ -1567,27 +1555,12 @@ export function outputGoalTreePretty(nodes: GoalTreeNode[]): void {
   console.log();
 }
 
-export function outputGoalTreeJson(nodes: GoalTreeNode[]): void {
-  const transform = (node: GoalTreeNode): Record<string, unknown> => ({
-    ...transformGoal(node),
-    childGoals: ((node.childGoals ?? []) as GoalTreeNode[]).map(transform),
-  });
-  console.log(JSON.stringify({
-    goals: nodes.map(transform),
-    total: nodes.length,
-  }, null, 2));
-}
-
 export function outputGoalPeriodsJson(periods: GoalPeriod[]): void {
   console.log(JSON.stringify({ periods, total: periods.length }, null, 2));
 }
 
 export function outputGoalPeriodsPretty(periods: GoalPeriod[]): void {
-  if (periods.length === 0) {
-    console.log(chalk.gray('No periods found.'));
-    return;
-  }
-  console.log(chalk.bold(`\nPeriods (${periods.length})`));
+  console.log(chalk.bold(`\nPeriods (${periods.length} total)`));
   console.log(chalk.gray('─'.repeat(50)));
   for (const p of periods) {
     console.log(`  ${chalk.bold(p.value)} ${chalk.gray(p.label)}`);
@@ -1605,80 +1578,66 @@ export function outputGoalStatsJson(stats: GoalStats): void {
 export function outputGoalStatsPretty(stats: GoalStats): void {
   console.log(chalk.bold('\nOKR stats'));
   console.log(chalk.gray('─'.repeat(50)));
-  console.log(`  ${chalk.cyan('Objectives:')} ${stats.totalObjectives}`);
-  console.log(`  ${chalk.cyan('Key results:')} ${stats.totalKeyResults} (${stats.completedKeyResults} achieved)`);
-  const b = stats.statusBreakdown;
-  if (b) {
-    console.log(
-      `  ${chalk.cyan('Status:')} ${chalk.green(`${b.onTrack} on-track`)} · ${chalk.yellow(`${b.atRisk} at-risk`)} · ${chalk.red(`${b.offTrack} off-track`)} · ${b.achieved} achieved`,
-    );
-  }
-  console.log(`  ${chalk.cyan('Average progress:')} ${Math.round(stats.averageProgress)}%`);
+  console.log(`  ${chalk.gray('Objectives:')}  ${stats.totalObjectives}`);
+  console.log(`  ${chalk.gray('Key results:')} ${stats.totalKeyResults} (${stats.completedKeyResults} achieved)`);
+  console.log(
+    `  ${chalk.gray('Breakdown:')}   ` +
+      `${chalk.green(`${stats.statusBreakdown.onTrack} on-track`)}, ` +
+      `${chalk.yellow(`${stats.statusBreakdown.atRisk} at-risk`)}, ` +
+      `${chalk.red(`${stats.statusBreakdown.offTrack} off-track`)}, ` +
+      `${chalk.green(`${stats.statusBreakdown.achieved} achieved`)}`,
+  );
+  console.log(`  ${chalk.gray('Avg progress:')} ${stats.averageProgress}%`);
   if (stats.averageConfidence != null) {
-    console.log(`  ${chalk.cyan('Average confidence:')} ${Math.round(stats.averageConfidence)}%`);
+    console.log(`  ${chalk.gray('Avg confidence:')} ${stats.averageConfidence}%`);
   }
   if (stats.periodEndDate) {
-    console.log(`  ${chalk.cyan('Period ends:')} ${formatDate(new Date(stats.periodEndDate))}`);
+    console.log(`  ${chalk.gray('Period ends:')}  ${new Date(stats.periodEndDate).toISOString().slice(0, 10)}`);
   }
   console.log();
 }
 
 // ─── Key result output ─────────────────────────────────────
 
-function getKeyResultStatusColor(status: string): 'gray' | 'green' | 'yellow' | 'red' | 'cyan' {
-  switch (status) {
-    case 'not-started': return 'gray';
-    case 'on-track': return 'green';
-    case 'at-risk': return 'yellow';
-    case 'off-track': return 'red';
-    case 'achieved': return 'cyan';
-    default: return 'gray';
-  }
-}
-
-/** Where `currentValue` sits between start and target, 0–100. */
-function keyResultProgress(kr: KeyResult): number | null {
-  const span = kr.targetValue - kr.startValue;
-  if (span === 0) return null;
-  const pct = ((kr.currentValue - kr.startValue) / span) * 100;
-  return Math.max(0, Math.min(100, Math.round(pct)));
-}
-
-function formatKeyResultValue(kr: KeyResult): string {
-  const unit = kr.unit === 'percent' ? '%' : '';
-  return `${kr.currentValue}${unit} / ${kr.targetValue}${unit}`;
+/**
+ * Most recent check-in timestamp. Not a column — derived from the `checkIns`
+ * the read already includes, because "this key result has not been touched in
+ * five weeks" is a finding, and every consumer would otherwise recompute it.
+ * Null when the read carried no check-ins, or the key result has never had one.
+ */
+function lastCheckInAt(kr: KeyResult): string | null {
+  if (!kr.checkIns?.length) return null;
+  const latest = kr.checkIns.reduce((newest, c) =>
+    new Date(c.createdAt) > new Date(newest.createdAt) ? c : newest,
+  );
+  return new Date(latest.createdAt).toISOString();
 }
 
 function transformKeyResult(kr: KeyResult): Record<string, unknown> {
   return {
     id: kr.id,
     goalId: kr.goalId,
-    goal: kr.goal ?? null,
+    goal: kr.goal ? { id: kr.goal.id, title: kr.goal.title } : null,
     title: kr.title,
     description: kr.description,
     status: kr.statusOverride ?? kr.status,
-    statusIsOverride: kr.statusOverride != null,
+    statusOverride: kr.statusOverride ?? null,
     startValue: kr.startValue,
     currentValue: kr.currentValue,
     targetValue: kr.targetValue,
     progress: keyResultProgress(kr),
     unit: kr.unit,
     unitLabel: kr.unitLabel ?? null,
-    confidence: kr.confidence ?? null,
     period: kr.period,
-    workspaceId: kr.workspaceId,
+    periodEnd: kr.periodEnd ? new Date(kr.periodEnd).toISOString() : null,
+    lastCheckInAt: lastCheckInAt(kr),
+    confidence: kr.confidence ?? null,
     driUserId: kr.driUserId,
-    projects: kr.projects?.map((p) => ({
-      projectId: p.projectId,
-      name: p.project?.name ?? null,
-    })),
-    features: kr.features?.map((f) => ({
-      featureId: f.featureId,
-      name: f.feature?.name ?? null,
-      ticketProgress: f.feature?.ticketProgress ?? null,
-    })),
-    createdAt: new Date(kr.createdAt).toISOString(),
-    updatedAt: new Date(kr.updatedAt).toISOString(),
+    workspaceId: kr.workspaceId,
+    projects: kr.projects?.map((l) => ({ id: l.projectId, name: l.project?.name ?? null })) ?? [],
+    features: kr.features?.map((l) => ({ id: l.featureId, name: l.feature?.name ?? null })) ?? [],
+    createdAt: kr.createdAt ? new Date(kr.createdAt).toISOString() : null,
+    updatedAt: kr.updatedAt ? new Date(kr.updatedAt).toISOString() : null,
   };
 }
 
@@ -1687,45 +1646,22 @@ export function outputKeyResultJson(kr: KeyResult): void {
 }
 
 export function outputKeyResultPretty(kr: KeyResult): void {
-  console.log(chalk.gray('─'.repeat(50)));
   const status = kr.statusOverride ?? kr.status;
-  const pct = keyResultProgress(kr);
-  console.log(`\n${chalk[getKeyResultStatusColor(status)](`[${status}]`)} ${chalk.bold(kr.title)}`);
-  console.log(chalk.gray(`  ID: ${kr.id}`));
+  const badge = chalk[getKeyResultStatusColor(status)](`[${status}]`);
+  console.log(`  ${badge} ${chalk.bold(kr.title)}`);
   console.log(
-    `  ${chalk.cyan('Value:')} ${formatKeyResultValue(kr)}${pct != null ? chalk.gray(` (${pct}%)`) : ''} ${chalk.gray(`[${kr.unitLabel ?? kr.unit}]`)}`,
+    chalk.gray(
+      `    ${kr.currentValue}/${kr.targetValue} ${kr.unit} (${keyResultProgress(kr)}%)` +
+        `${kr.period ? ` · ${kr.period}` : ''} · objective #${kr.goalId}`,
+    ),
   );
-  console.log(`  ${chalk.cyan('Objective:')} ${kr.goal ? `#${kr.goal.id} ${kr.goal.title}` : `#${kr.goalId}`}`);
-  console.log(`  ${chalk.cyan('Period:')} ${kr.period}`);
-  if (kr.confidence != null) {
-    console.log(`  ${chalk.cyan('Confidence:')} ${kr.confidence}%`);
-  }
-  if (kr.description) {
-    console.log(`  ${chalk.gray('Description:')} ${kr.description.substring(0, 200)}${kr.description.length > 200 ? '...' : ''}`);
-  }
+  console.log(chalk.gray(`    ID: ${kr.id}`));
   if (kr.projects?.length) {
-    console.log(`  ${chalk.cyan('Projects:')}`);
-    for (const p of kr.projects) {
-      console.log(`    - ${p.project?.name ?? p.projectId} ${chalk.gray(`(${p.projectId})`)}`);
-    }
+    console.log(chalk.gray(`    Projects: ${kr.projects.map((l) => l.project?.name ?? l.projectId).join(', ')}`));
   }
   if (kr.features?.length) {
-    console.log(`  ${chalk.cyan('Features:')}`);
-    for (const f of kr.features) {
-      const tp = f.feature?.ticketProgress;
-      const counts = tp ? chalk.gray(` — ${tp.done}/${tp.total} tickets`) : '';
-      console.log(`    - ${f.feature?.name ?? f.featureId} ${chalk.gray(`(${f.featureId})`)}${counts}`);
-    }
+    console.log(chalk.gray(`    Features: ${kr.features.map((l) => l.feature?.name ?? l.featureId).join(', ')}`));
   }
-  if (kr.checkIns?.length) {
-    console.log(`  ${chalk.cyan('Recent check-ins:')}`);
-    for (const c of kr.checkIns.slice(0, 5)) {
-      console.log(
-        `    - ${formatDate(new Date(c.createdAt))} ${c.previousValue} → ${c.newValue}${c.notes ? chalk.gray(` — ${c.notes}`) : ''}`,
-      );
-    }
-  }
-  console.log();
 }
 
 export function outputKeyResultsJson(keyResults: KeyResult[]): void {
@@ -1743,14 +1679,7 @@ export function outputKeyResultsPretty(keyResults: KeyResult[]): void {
   console.log(chalk.bold(`\nKey results (${keyResults.length} total)`));
   console.log(chalk.gray('─'.repeat(50)));
   for (const kr of keyResults) {
-    const status = kr.statusOverride ?? kr.status;
-    const pct = keyResultProgress(kr);
-    const badge = chalk[getKeyResultStatusColor(status)](`[${status}]`);
-    const objective = kr.goal ? chalk.gray(` — #${kr.goal.id} ${kr.goal.title}`) : chalk.gray(` — #${kr.goalId}`);
-    console.log(
-      `  ${badge} ${chalk.bold(kr.title)} ${formatKeyResultValue(kr)}${pct != null ? chalk.gray(` (${pct}%)`) : ''}${objective}`,
-    );
-    console.log(chalk.gray(`    ID: ${kr.id}  Period: ${kr.period}`));
+    outputKeyResultPretty(kr);
   }
   console.log();
 }
@@ -1762,16 +1691,77 @@ export function outputCheckInJson(checkIn: KeyResultCheckIn): void {
     previousValue: checkIn.previousValue,
     newValue: checkIn.newValue,
     notes: checkIn.notes,
-    createdAt: new Date(checkIn.createdAt).toISOString(),
+    createdAt: checkIn.createdAt ? new Date(checkIn.createdAt).toISOString() : null,
   }, null, 2));
 }
 
 export function outputCheckInPretty(checkIn: KeyResultCheckIn): void {
+  console.log(`  ${chalk.gray('Value:')} ${checkIn.previousValue} → ${chalk.bold(String(checkIn.newValue))}`);
+  if (checkIn.notes) console.log(`  ${chalk.gray('Note:')} ${checkIn.notes}`);
+  console.log(chalk.gray(`  Check-in ID: ${checkIn.id}`));
+  console.log();
+}
+
+// ─── OKR (objective + nested key results) output ───────────
+
+function transformObjective(objective: ObjectiveWithKeyResults): Record<string, unknown> {
+  return {
+    id: objective.id,
+    title: objective.title,
+    description: objective.description,
+    status: objective.status,
+    period: objective.period,
+    health: objective.health,
+    progress: objective.progress,
+    statusCounts: objective.statusCounts,
+    workspaceId: objective.workspaceId,
+    workspace: objective.workspace
+      ? {
+          id: objective.workspace.id,
+          slug: objective.workspace.slug,
+          name: objective.workspace.name,
+        }
+      : null,
+    parentGoalId: objective.parentGoalId,
+    keyResults: objective.keyResults.map(transformKeyResult),
+  };
+}
+
+export function outputObjectivesJson(objectives: ObjectiveWithKeyResults[]): void {
+  const totalKeyResults = objectives.reduce((n, o) => n + o.keyResults.length, 0);
+  console.log(JSON.stringify({
+    objectives: objectives.map(transformObjective),
+    total: objectives.length,
+    totalKeyResults,
+  }, null, 2));
+}
+
+export function outputObjectivesPretty(objectives: ObjectiveWithKeyResults[]): void {
+  if (objectives.length === 0) {
+    console.log(chalk.gray('No OKRs found.'));
+    return;
+  }
+  const totalKeyResults = objectives.reduce((n, o) => n + o.keyResults.length, 0);
   console.log(
-    `  ${chalk.cyan('Value:')} ${checkIn.previousValue} → ${chalk.bold(String(checkIn.newValue))}`,
+    chalk.bold(`\nOKRs (${objectives.length} objectives, ${totalKeyResults} key results)`),
   );
-  if (checkIn.notes) {
-    console.log(`  ${chalk.gray('Note:')} ${checkIn.notes}`);
+  console.log(chalk.gray('─'.repeat(50)));
+  for (const o of objectives) {
+    const badge = chalk[getGoalStatusColor(o.status)](`[${o.status}]`);
+    const period = o.period ? chalk.gray(` ${o.period}`) : '';
+    console.log(
+      `\n  ${badge}${period} ${chalk.bold(o.title)} ${chalk.gray(`#${o.id}`)} ${chalk.gray(`${o.progress}%`)}`,
+    );
+    if (o.keyResults.length === 0) {
+      console.log(chalk.gray('      (no key results)'));
+      continue;
+    }
+    for (const kr of o.keyResults) {
+      const krStatus = kr.statusOverride ?? kr.status;
+      const krBadge = chalk[getKeyResultStatusColor(krStatus)](`[${krStatus}]`);
+      console.log(`    ${krBadge} ${kr.title} ${chalk.gray(`${kr.currentValue}/${kr.targetValue} ${kr.unit}`)}`);
+      console.log(chalk.gray(`      ID: ${kr.id}`));
+    }
   }
   console.log();
 }

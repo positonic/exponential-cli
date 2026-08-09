@@ -139,7 +139,7 @@ and live under `goals kr`.
 # List a workspace's objectives, or the annual → quarterly cascade
 exponential goals list --workspace clear --period Q3-2026
 exponential goals list --workspace clear --tree
-exponential goals list --mine                 # your own, including personal ones
+exponential goals list --all-workspaces       # "what am I neglecting" is cross-workspace
 
 exponential goals get 46
 exponential goals create --workspace clear --title "Ship the CLI" --period Q3-2026
@@ -157,6 +157,9 @@ exponential goals delete --id 46                      # refuses if it has key re
 
 exponential goals periods
 exponential goals stats --workspace clear --period Q3-2026
+
+# The quarter at a glance: objectives with their key results nested
+exponential okrs list --workspace clear
 ```
 
 Key results:

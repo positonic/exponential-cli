@@ -1,9 +1,15 @@
 import { Command } from 'commander';
-import type { GoalStatus, GoalWritableStatus } from 'exponential-sdk';
+import type {
+  GoalStatus,
+  GoalWritableStatus,
+  KeyResultStatus,
+  KeyResultUnit,
+  ObjectiveWithKeyResults,
+  Workspace,
+} from 'exponential-sdk';
 import { getClient } from '../client/index.js';
 import { handleError } from '../utils/errors.js';
-import { resolveWorkspaceId } from '../utils/resolve.js';
-import { createKeyResultsCommand } from './keyResults.js';
+import { resolveWorkspace, resolveWorkspaceId } from '../utils/resolve.js';
 import {
   applyMentions,
   collectMention,
@@ -16,15 +22,23 @@ import {
   outputCommentsJson,
   outputCommentsPretty,
   outputGoalJson,
-  outputGoalPeriodsJson,
-  outputGoalPeriodsPretty,
   outputGoalPretty,
-  outputGoalStatsJson,
-  outputGoalStatsPretty,
-  outputGoalTreeJson,
-  outputGoalTreePretty,
   outputGoalsJson,
   outputGoalsPretty,
+  outputGoalTreeJson,
+  outputGoalTreePretty,
+  outputGoalPeriodsJson,
+  outputGoalPeriodsPretty,
+  outputGoalStatsJson,
+  outputGoalStatsPretty,
+  outputKeyResultJson,
+  outputKeyResultPretty,
+  outputKeyResultsJson,
+  outputKeyResultsPretty,
+  outputCheckInJson,
+  outputCheckInPretty,
+  outputObjectivesJson,
+  outputObjectivesPretty,
 } from '../utils/output.js';
 
 interface GlobalOptions {
@@ -32,7 +46,7 @@ interface GlobalOptions {
   pretty?: boolean;
 }
 
-/** Statuses `goals set-status` accepts. `on-hold` lives only on this path. */
+/** Statuses `goals set-status` / `goals close` accept. */
 const GOAL_STATUSES: GoalStatus[] = [
   'planned',
   'active',
@@ -41,7 +55,10 @@ const GOAL_STATUSES: GoalStatus[] = [
   'on-hold',
 ];
 
-/** The subset the general update path accepts. */
+/**
+ * Statuses `goals create` / `goals update` accept. `on-hold` is deliberately
+ * absent: only `updateGoalStatus` takes it, which is what `set-status` calls.
+ */
 const GOAL_WRITABLE_STATUSES: GoalWritableStatus[] = [
   'planned',
   'active',
@@ -49,12 +66,116 @@ const GOAL_WRITABLE_STATUSES: GoalWritableStatus[] = [
   'archived',
 ];
 
+const KEY_RESULT_STATUSES: KeyResultStatus[] = [
+  'not-started',
+  'on-track',
+  'at-risk',
+  'off-track',
+  'achieved',
+];
+
+const KEY_RESULT_UNITS: KeyResultUnit[] = [
+  'percent',
+  'count',
+  'currency',
+  'hours',
+  'custom',
+];
+
+/**
+ * The current quarter as a period string, e.g. `Q3-2026`. Mirrors how the
+ * server derives the coaching-home period; `okrs list` defaults to it because
+ * "how is the quarter going" almost always means *this* quarter.
+ */
+function currentPeriod(): string {
+  const now = new Date();
+  return `Q${Math.floor(now.getMonth() / 3) + 1}-${now.getFullYear()}`;
+}
+
+/**
+ * Resolve `--workspace` / `--all-workspaces` to the set of workspaces to read.
+ *
+ * "Am I neglecting a goal" is inherently a cross-workspace question, so the
+ * flag lives here rather than making every caller write the loop. The
+ * procedures are per-workspace, so this fans out and the caller concatenates.
+ */
+async function targetWorkspaces(
+  client: ReturnType<typeof getClient>,
+  options: { workspace?: string; allWorkspaces?: boolean },
+): Promise<Workspace[]> {
+  if (options.allWorkspaces) {
+    if (options.workspace) {
+      throw new Error('--workspace and --all-workspaces are mutually exclusive.');
+    }
+    return await client.workspaces.list();
+  }
+  return [await resolveWorkspace(client, options.workspace)];
+}
+
+/**
+ * Fan a per-workspace read out across workspaces, keeping partial results.
+ *
+ * A cross-workspace sweep exists to answer "what am I neglecting", so one
+ * workspace the caller can no longer read must not take the rest with it —
+ * `okr.getByObjective` throws FORBIDDEN for a non-member, and membership does
+ * lapse. Failures are surfaced on stderr rather than swallowed: a silently
+ * short list is worse than none. If nothing succeeded, the first error is
+ * rethrown, which is also what makes a single-workspace read still fail loudly.
+ */
+async function fanOutByWorkspace<T>(
+  workspaces: Workspace[],
+  read: (workspace: Workspace) => Promise<T[]>,
+): Promise<T[]> {
+  const settled = await Promise.allSettled(workspaces.map(read));
+  const items: T[] = [];
+  const skipped: string[] = [];
+  settled.forEach((result, i) => {
+    if (result.status === 'fulfilled') {
+      items.push(...result.value);
+      return;
+    }
+    const reason =
+      result.reason instanceof Error ? result.reason.message : String(result.reason);
+    skipped.push(`${workspaces[i]!.slug}: ${reason}`);
+  });
+
+  if (skipped.length === workspaces.length) {
+    const [first] = settled.filter((r) => r.status === 'rejected');
+    throw (first as PromiseRejectedResult).reason;
+  }
+  // stderr, so a skipped workspace is visible without corrupting piped JSON.
+  for (const line of skipped) {
+    console.error(`Warning: skipped workspace ${line}`);
+  }
+  return items;
+}
+
+/**
+ * Objective ids are integers, not cuids — the CLI parses them here so a typo
+ * fails with a readable message instead of a server-side zod error.
+ */
+function parseGoalId(value: string): number {
+  const id = Number(value);
+  if (!Number.isInteger(id)) {
+    throw new Error(
+      `Goal id must be a whole number, got "${value}". List them with \`exponential goals list\`.`,
+    );
+  }
+  return id;
+}
+
+function parseNumber(value: string, label: string): number {
+  const n = Number(value);
+  if (!Number.isFinite(n)) {
+    throw new Error(`${label} must be a number, got "${value}".`);
+  }
+  return n;
+}
+
 function validateGoalStatus(value: string | undefined): GoalStatus | undefined {
   if (!value) return undefined;
   if (!(GOAL_STATUSES as string[]).includes(value)) {
-    throw new Error(
-      `Invalid goal status "${value}". Valid: ${GOAL_STATUSES.join(', ')}`,
-    );
+    throw new Error(`Invalid status "${value}". Valid: ${GOAL_STATUSES.join(', ')}`);
   }
   return value as GoalStatus;
 }
@@ -64,80 +185,61 @@ function validateWritableGoalStatus(
 ): GoalWritableStatus | undefined {
   if (!value) return undefined;
   if (!(GOAL_WRITABLE_STATUSES as string[]).includes(value)) {
-    const hint =
-      value === 'on-hold'
-        ? ' Use `exponential goals set-status --status on-hold` for that one.'
-        : '';
+    const extra = value === 'on-hold' ? ' Use `goals set-status` for on-hold.' : '';
     throw new Error(
-      `Invalid goal status "${value}". Valid: ${GOAL_WRITABLE_STATUSES.join(', ')}.${hint}`,
+      `Invalid status "${value}". Valid: ${GOAL_WRITABLE_STATUSES.join(', ')}.${extra}`,
     );
   }
   return value as GoalWritableStatus;
 }
 
-/**
- * Goal ids are integers, not cuids — the CLI parses them here so a typo fails
- * with a readable message instead of a server-side zod error.
- */
-function parseGoalId(value: string): number {
-  const id = Number(value);
-  if (!Number.isInteger(id)) {
+function validateKeyResultStatus(
+  value: string | undefined,
+): KeyResultStatus | undefined {
+  if (!value) return undefined;
+  if (!(KEY_RESULT_STATUSES as string[]).includes(value)) {
     throw new Error(
-      `Goal id must be a whole number, got "${value}". Find one with \`exponential search "<goal title>"\`.`,
+      `Invalid status "${value}". Valid: ${KEY_RESULT_STATUSES.join(', ')}`,
     );
   }
-  return id;
+  return value as KeyResultStatus;
 }
 
-/**
- * Flags that can clear a field: `"none"` becomes an explicit `null`, an absent
- * flag stays `undefined` so the SDK never names it on the wire.
- */
-function nullable(value: string | undefined): string | null | undefined {
-  if (value === undefined) return undefined;
-  return value === 'none' ? null : value;
-}
-
-function parseGoalDate(value: string | undefined): Date | undefined {
-  if (!value || value === 'none') return undefined;
-  const date = new Date(value);
-  if (isNaN(date.getTime())) {
-    throw new Error(`Invalid date "${value}". Use YYYY-MM-DD`);
+function validateKeyResultUnit(value: string | undefined): KeyResultUnit | undefined {
+  if (!value) return undefined;
+  if (!(KEY_RESULT_UNITS as string[]).includes(value)) {
+    throw new Error(`Invalid unit "${value}". Valid: ${KEY_RESULT_UNITS.join(', ')}`);
   }
-  return date;
+  return value as KeyResultUnit;
 }
 
 /**
- * `exponential goals …` — objectives, their key results (`goals kr …`) and the
- * discussion on them (`goals comment …`).
+ * `exponential goals kr …` — key results.
  *
- * Objectives carry integer ids and key results carry cuids; the split is the
- * one thing to keep straight here. Status changes route through `set-status`
- * (a single-column write), never through `update`.
+ * Kept as a subtree of `goals` because a key result is meaningless without its
+ * objective, and because the tRPC router mounted at `okr` is the KEY RESULT
+ * router — naming the group `kr` keeps that straight. Ids here are cuids; the
+ * `--goal` they hang off is an integer.
  */
-export function createGoalsCommand(): Command {
-  const goals = new Command('goals').description(
-    'Manage objectives (goals) and their key results. Ids are integers — find one with `exponential goals list` or `exponential search "<title>"`.',
+function createKeyResultsCommand(): Command {
+  const kr = new Command('kr').description(
+    'Key results on an objective. Ids are CUIDs; --goal takes the objective\'s integer id.',
   );
 
-  goals
-    .command('list')
-    .description('List objectives in a workspace')
-    .option('--workspace <slug|id>', 'Workspace slug or CUID')
-    .option('--period <period>', 'Filter by period, e.g. Q3-2026')
-    .option('--status <status>', `Filter by status: ${GOAL_STATUSES.join(', ')}`)
-    .option('--tree', 'Render the parent → child cascade instead of a flat list')
-    .option(
-      '--mine',
-      'List your own objectives, including personal ones outside any workspace',
-    )
+  kr.command('list')
+    .description('List key results')
+    .option('--goal <id>', 'Objective ID (a number)')
+    .option('-w, --workspace <slug|id>', 'Workspace (workspace-wide: every member\'s KRs)')
+    .option('--period <period>', 'Period, e.g. Q3-2026')
+    .option('--status <status>', `Filter by status: ${KEY_RESULT_STATUSES.join(', ')}`)
+    .option('--mine', 'Narrow a workspace list to key results you own')
     .action(
       async (
         options: {
+          goal?: string;
           workspace?: string;
           period?: string;
           status?: string;
-          tree?: boolean;
           mine?: boolean;
         },
         cmd: Command,
@@ -145,108 +247,125 @@ export function createGoalsCommand(): Command {
         const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
         const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
         try {
-          const status = validateGoalStatus(options.status);
+          const status = validateKeyResultStatus(options.status);
           const client = getClient();
-          // --mine drops the workspace scope entirely: the server reads that as
-          // "the caller's own goals", which is the only way to see personal ones.
-          const workspaceId = options.mine
-            ? undefined
-            : await resolveWorkspaceId(client, options.workspace);
+          const goalId = options.goal ? parseGoalId(options.goal) : undefined;
 
-          if (options.tree) {
-            const tree = await client.goals.tree({ workspaceId, status });
-            if (useJson) outputGoalTreeJson(tree);
-            else outputGoalTreePretty(tree);
-            return;
+          // No --workspace and no --goal keeps this the caller's personal list;
+          // resolving a default workspace here would silently widen it. With a
+          // --goal, borrow that objective's own workspace: an unscoped
+          // `okr.getAll` is owner-scoped server-side, so "the key results on
+          // objective #48" comes back empty for anyone but their author.
+          let workspaceId: string | undefined;
+          if (options.workspace) {
+            workspaceId = await resolveWorkspaceId(client, options.workspace);
+          } else if (goalId !== undefined) {
+            const goal = await client.goals.get(goalId);
+            workspaceId = goal.workspaceId ?? undefined;
           }
 
-          const list = await client.goals.list({
+          const list = await client.goals.keyResults.list({
             workspaceId,
+            goalId,
             period: options.period,
             status,
+            onlyMine: options.mine,
           });
-          if (useJson) outputGoalsJson(list);
-          else outputGoalsPretty(list);
+          if (useJson) outputKeyResultsJson(list);
+          else outputKeyResultsPretty(list);
         } catch (error) {
           handleError(error, useJson);
         }
       },
     );
 
-  goals
-    .command('get <id>')
-    .description('Get an objective by its integer id')
+  kr.command('get <id>')
+    .description('Get a key result by CUID')
     .action(async (id: string, _options: Record<string, never>, cmd: Command) => {
       const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
       const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
       try {
-        const client = getClient();
-        const goal = await client.goals.get(parseGoalId(id));
-        if (useJson) outputGoalJson(goal);
-        else outputGoalPretty(goal);
+        const keyResult = await getClient().goals.keyResults.get(id);
+        if (useJson) outputKeyResultJson(keyResult);
+        else outputKeyResultPretty(keyResult);
       } catch (error) {
         handleError(error, useJson);
       }
     });
 
-  goals
-    .command('create')
-    .description('Create an objective')
-    .requiredOption('-t, --title <text>', 'Objective title')
-    .option('--workspace <slug|id>', 'Workspace slug or CUID')
-    .option(
-      '--personal',
-      'Create the objective outside any workspace (visible only to you)',
-    )
-    .option('--period <period>', 'Period, e.g. Q3-2026 or Annual-2026')
-    .option('--status <status>', `Status: ${GOAL_WRITABLE_STATUSES.join(', ')} (default active)`)
+  kr.command('create')
+    .description('Create a key result on an objective')
+    .requiredOption('--goal <id>', 'Objective ID (a number)')
+    .requiredOption('-t, --title <text>', 'Key result title')
+    .requiredOption('--target <n>', 'Target value')
+    .option('--start <n>', 'Starting value (default 0)')
+    .option('--current <n>', 'Current value (defaults to the start value)')
+    .option('--unit <unit>', `Unit: ${KEY_RESULT_UNITS.join(', ')}`)
+    .option('--period <period>', 'Period, e.g. Q3-2026 (defaults to the objective\'s)')
     .option('-d, --description <text>', 'Description')
-    .option('--why <text>', 'Why this objective matters')
-    .option('--due <date>', 'Due date (YYYY-MM-DD)')
-    .option('--dri <userId>', 'Directly responsible individual')
-    .option('--parent <id>', 'Nest under a parent objective (max depth 5)')
-    .option('--project <cuid>', 'Link a project on creation')
+    .option('--dri <userId>', 'Directly responsible individual (user ID)')
     .action(
       async (
         options: {
+          goal: string;
           title: string;
-          workspace?: string;
-          personal?: boolean;
+          target: string;
+          start?: string;
+          current?: string;
+          unit?: string;
           period?: string;
-          status?: string;
           description?: string;
-          why?: string;
-          due?: string;
           dri?: string;
-          parent?: string;
-          project?: string;
         },
         cmd: Command,
       ) => {
         const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
         const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
         try {
-          const status = validateWritableGoalStatus(options.status);
+          const unit = validateKeyResultUnit(options.unit);
           const client = getClient();
-          const workspaceId = options.personal
-            ? undefined
-            : await resolveWorkspaceId(client, options.workspace);
-          const created = await client.goals.create({
-            title: options.title,
+          const goalId = parseGoalId(options.goal);
+          const startValue = options.start
+            ? parseNumber(options.start, '--start')
+            : undefined;
+
+          // `period` is required by the server but is a property of the OKR
+          // cycle, not of the individual KR — fall back to the objective's so
+          // the common case needs one less flag.
+          // The SDK resolves the objective's workspace when none is passed; if
+          // we fetch the objective here anyway, hand that workspace over rather
+          // than making it read the same row twice.
+          let period = options.period;
+          let workspaceId: string | undefined;
+          if (!period) {
+            const goal = await client.goals.get(goalId);
+            if (!goal.period) {
+              throw new Error(
+                `Objective #${goalId} has no period, so --period is required. See \`exponential goals periods\`.`,
+              );
+            }
+            period = goal.period;
+            workspaceId = goal.workspaceId ?? undefined;
+          }
+
+          const keyResult = await client.goals.keyResults.create({
+            goalId,
             workspaceId,
-            period: options.period,
-            status,
+            title: options.title,
+            targetValue: parseNumber(options.target, '--target'),
+            startValue,
+            currentValue: options.current
+              ? parseNumber(options.current, '--current')
+              : startValue,
+            unit,
+            period,
             description: options.description,
-            whyThisGoal: options.why,
-            dueDate: parseGoalDate(options.due),
             driUserId: options.dri,
-            parentGoalId: options.parent ? parseGoalId(options.parent) : undefined,
-            projectId: options.project,
           });
-          if (useJson) outputGoalJson(created);
+          if (useJson) outputKeyResultJson(keyResult);
           else {
-            console.log('\n✓ Objective created');
-            outputGoalPretty(created);
+            console.log('\n✓ Key result created');
+            outputKeyResultPretty(keyResult);
           }
         } catch (error) {
           handleError(error, useJson);
@@ -254,70 +373,66 @@ export function createGoalsCommand(): Command {
       },
     );
 
-  goals
-    .command('update')
-    .description(
-      'Update an objective. Only the fields you pass are written — everything else is left alone.',
-    )
-    .requiredOption('--id <id>', 'Objective id (a number)')
+  kr.command('update')
+    .description('Update a key result (only the flags you pass are written)')
+    .requiredOption('--id <cuid>', 'Key result CUID')
     .option('-t, --title <text>', 'New title')
-    .option('-d, --description <text>', 'New description ("none" clears it)')
-    .option('--why <text>', 'Why this objective matters ("none" clears it)')
-    .option('--period <period>', 'Period, e.g. Q3-2026 ("none" clears it)')
-    .option('--due <date>', 'Due date (YYYY-MM-DD, or "none" to clear)')
-    .option('--dri <userId>', 'Directly responsible individual ("none" clears it)')
-    .option(
-      '--workspace <slug|id|none>',
-      'Re-home the objective; "none" makes it personal',
-    )
-    .option(
-      '--status <status>',
-      `Status: ${GOAL_WRITABLE_STATUSES.join(', ')}. Prefer \`goals set-status\`.`,
-    )
+    .option('-d, --description <text>', 'New description')
+    .option('--current <n>', 'Current value (prefer `kr checkin` — it records history)')
+    .option('--target <n>', 'Target value')
+    .option('--start <n>', 'Starting value')
+    .option('--unit <unit>', `Unit: ${KEY_RESULT_UNITS.join(', ')}`)
+    .option('--status <status>', `Status: ${KEY_RESULT_STATUSES.join(', ')}`)
+    .option('--confidence <n>', 'Confidence 0-100')
+    .option('--dri <userId>', 'Directly responsible individual (user ID)')
+    .option('--goal <id>', 'Move the key result to a different objective')
     .action(
       async (
         options: {
           id: string;
           title?: string;
           description?: string;
-          why?: string;
-          period?: string;
-          due?: string;
-          dri?: string;
-          workspace?: string;
+          current?: string;
+          target?: string;
+          start?: string;
+          unit?: string;
           status?: string;
+          confidence?: string;
+          dri?: string;
+          goal?: string;
         },
         cmd: Command,
       ) => {
         const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
         const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
         try {
-          const status = validateWritableGoalStatus(options.status);
-          const client = getClient();
-
-          // "none" is the only way to clear a field; an omitted flag must stay
-          // omitted all the way to the wire, or it clobbers what it never named.
-          let workspaceId: string | null | undefined;
-          if (options.workspace === 'none') workspaceId = null;
-          else if (options.workspace !== undefined) {
-            workspaceId = await resolveWorkspaceId(client, options.workspace);
-          }
-
-          const updated = await client.goals.update({
-            id: parseGoalId(options.id),
+          const status = validateKeyResultStatus(options.status);
+          const unit = validateKeyResultUnit(options.unit);
+          const keyResult = await getClient().goals.keyResults.update({
+            id: options.id,
             title: options.title,
-            description: nullable(options.description),
-            whyThisGoal: nullable(options.why),
-            period: nullable(options.period),
-            dueDate: options.due === 'none' ? null : parseGoalDate(options.due),
-            driUserId: nullable(options.dri),
-            workspaceId,
+            description: options.description,
+            currentValue: options.current
+              ? parseNumber(options.current, '--current')
+              : undefined,
+            targetValue: options.target
+              ? parseNumber(options.target, '--target')
+              : undefined,
+            startValue: options.start
+              ? parseNumber(options.start, '--start')
+              : undefined,
+            unit,
             status,
+            confidence: options.confidence
+              ? parseNumber(options.confidence, '--confidence')
+              : undefined,
+            driUserId: options.dri,
+            goalId: options.goal ? parseGoalId(options.goal) : undefined,
           });
-          if (useJson) outputGoalJson(updated);
+          if (useJson) outputKeyResultJson(keyResult);
           else {
-            console.log('\n✓ Objective updated');
-            outputGoalPretty(updated);
+            console.log('\n✓ Key result updated');
+            outputKeyResultPretty(keyResult);
           }
         } catch (error) {
           handleError(error, useJson);
@@ -325,156 +440,31 @@ export function createGoalsCommand(): Command {
       },
     );
 
-  goals
-    .command('set-status')
+  kr.command('checkin')
     .description(
-      'Change an objective\'s status and nothing else. The safe way to close a quarter.',
+      'Record a progress check-in. Moves the value AND re-derives the status ' +
+        'from where it lands between start and target.',
     )
-    .requiredOption('--id <id>', 'Objective id (a number)')
-    .requiredOption('--status <status>', `Status: ${GOAL_STATUSES.join(', ')}`)
-    .action(async (options: { id: string; status: string }, cmd: Command) => {
-      const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
-      const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
-      try {
-        const status = validateGoalStatus(options.status)!;
-        const client = getClient();
-        const updated = await client.goals.setStatus({
-          id: parseGoalId(options.id),
-          status,
-        });
-        if (useJson) outputGoalJson(updated);
-        else {
-          console.log(`\n✓ Objective is now ${status}`);
-          outputGoalPretty(updated);
-        }
-      } catch (error) {
-        handleError(error, useJson);
-      }
-    });
-
-  goals
-    .command('close')
-    .description(
-      'Close an objective (status → completed). Writes only the status column.',
-    )
-    .requiredOption('--id <id>', 'Objective id (a number)')
-    .option(
-      '--status <status>',
-      'completed (default) or archived',
-      'completed',
-    )
-    .action(async (options: { id: string; status: string }, cmd: Command) => {
-      const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
-      const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
-      try {
-        if (options.status !== 'completed' && options.status !== 'archived') {
-          throw new Error(
-            `\`goals close\` takes --status completed or archived, got "${options.status}". Use \`goals set-status\` for the others.`,
-          );
-        }
-        const client = getClient();
-        const updated = await client.goals.setStatus({
-          id: parseGoalId(options.id),
-          status: options.status,
-        });
-        if (useJson) outputGoalJson(updated);
-        else {
-          console.log(`\n✓ Objective ${options.status}`);
-          outputGoalPretty(updated);
-        }
-      } catch (error) {
-        handleError(error, useJson);
-      }
-    });
-
-  goals
-    .command('reparent')
-    .description(
-      'Move an objective under a different parent, or detach it. Writes only parentGoalId.',
-    )
-    .requiredOption('--id <id>', 'Objective id (a number)')
-    .requiredOption('--parent <id|none>', 'New parent id, or "none" to detach')
-    .action(async (options: { id: string; parent: string }, cmd: Command) => {
-      const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
-      const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
-      try {
-        const client = getClient();
-        const updated = await client.goals.setParent({
-          id: parseGoalId(options.id),
-          parentGoalId:
-            options.parent === 'none' ? null : parseGoalId(options.parent),
-        });
-        if (useJson) outputGoalJson(updated);
-        else {
-          console.log(
-            options.parent === 'none'
-              ? '\n✓ Objective detached from its parent'
-              : `\n✓ Objective moved under #${options.parent}`,
-          );
-          outputGoalPretty(updated);
-        }
-      } catch (error) {
-        handleError(error, useJson);
-      }
-    });
-
-  goals
-    .command('delete')
-    .description(
-      'Delete an objective. Refuses while it still has key results — deleting an ' +
-        'objective deletes them too (KeyResult.goalId cascades), taking their ' +
-        'check-in history with them.',
-    )
-    .requiredOption('--id <id>', 'Objective id (a number)')
-    .option(
-      '--with-key-results',
-      'Delete the objective and cascade-delete its key results (destructive)',
-    )
+    .requiredOption('--id <cuid>', 'Key result CUID')
+    .requiredOption('--value <n>', 'New current value')
+    .option('--note <text>', 'Check-in note')
     .action(
-      async (options: { id: string; withKeyResults?: boolean }, cmd: Command) => {
+      async (
+        options: { id: string; value: string; note?: string },
+        cmd: Command,
+      ) => {
         const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
         const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
         try {
-          const id = parseGoalId(options.id);
-          const client = getClient();
-          const goal = await client.goals.get(id);
-          const keyResults = goal.keyResults ?? [];
-          const children = goal.childGoals ?? [];
-
-          if (keyResults.length > 0 && !options.withKeyResults) {
-            const payload = {
-              deleted: false,
-              id,
-              reason: `has ${keyResults.length} key result(s)`,
-              keyResults: keyResults.map((kr) => ({ id: kr.id })),
-            };
-            if (useJson) console.log(JSON.stringify(payload, null, 2));
-            else {
-              console.error(
-                `Objective #${id} has ${keyResults.length} key result(s). Deleting it deletes them too.\n` +
-                  'Re-run with --with-key-results to go ahead, or move them with `goals kr update --id <cuid> --goal <other>`.',
-              );
-            }
-            process.exitCode = 1;
-            return;
-          }
-
-          await client.goals.delete(id);
-          const payload = {
-            deleted: true,
-            id,
-            keyResultsDeleted: keyResults.map((kr) => ({ id: kr.id })),
-            childGoalsDetached: children.map((c) => ({ id: c.id, title: c.title })),
-          };
-          if (useJson) console.log(JSON.stringify(payload, null, 2));
+          const checkIn = await getClient().goals.keyResults.checkIn({
+            id: options.id,
+            value: parseNumber(options.value, '--value'),
+            note: options.note,
+          });
+          if (useJson) outputCheckInJson(checkIn);
           else {
-            console.log('✓ Objective deleted');
-            if (keyResults.length) {
-              console.log(`  ${keyResults.length} key result(s) deleted with it`);
-            }
-            if (children.length) {
-              console.log(`  ${children.length} sub-goal(s) left detached`);
-            }
+            console.log('\n✓ Check-in recorded');
+            outputCheckInPretty(checkIn);
           }
         } catch (error) {
           handleError(error, useJson);
@@ -482,48 +472,96 @@ export function createGoalsCommand(): Command {
       },
     );
 
-  goals
-    .command('periods')
-    .description('List the conventional period strings (quarters, halves, annual)')
-    .action(async (_options: Record<string, never>, cmd: Command) => {
+  kr.command('delete')
+    .description('Delete a key result')
+    .requiredOption('--id <cuid>', 'Key result CUID')
+    .action(async (options: { id: string }, cmd: Command) => {
       const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
       const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
       try {
-        const client = getClient();
-        const periods = await client.goals.periods();
-        if (useJson) outputGoalPeriodsJson(periods);
-        else outputGoalPeriodsPretty(periods);
+        await getClient().goals.keyResults.delete(options.id);
+        if (useJson) {
+          console.log(JSON.stringify({ deleted: true, id: options.id }, null, 2));
+        } else {
+          console.log('✓ Key result deleted');
+        }
       } catch (error) {
         handleError(error, useJson);
       }
     });
 
-  goals
-    .command('stats')
-    .description('Objective and key result counts, and average progress')
-    .option('--workspace <slug|id>', 'Workspace slug or CUID')
-    .option('--period <period>', 'Period, e.g. Q3-2026')
+  kr.command('link')
+    .description('Link executing work (a project or a feature) to a key result')
+    .requiredOption('--id <cuid>', 'Key result CUID')
+    .option('--project <cuid>', 'Project CUID')
+    .option('--feature <cuid>', 'Feature CUID')
     .action(
-      async (options: { workspace?: string; period?: string }, cmd: Command) => {
+      async (
+        options: { id: string; project?: string; feature?: string },
+        cmd: Command,
+      ) => {
         const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
         const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
         try {
+          if (!options.project === !options.feature) {
+            throw new Error('Pass exactly one of --project or --feature.');
+          }
           const client = getClient();
-          const workspaceId = await resolveWorkspaceId(client, options.workspace);
-          const stats = await client.goals.stats({
-            workspaceId,
-            period: options.period,
-          });
-          if (useJson) outputGoalStatsJson(stats);
-          else outputGoalStatsPretty(stats);
+          const result = options.project
+            ? await client.goals.keyResults.linkProject({
+                keyResultId: options.id,
+                projectId: options.project,
+              })
+            : await client.goals.keyResults.linkFeature({
+                keyResultId: options.id,
+                featureId: options.feature!,
+              });
+          if (useJson) console.log(JSON.stringify(result, null, 2));
+          else console.log(`\n✓ ${options.project ? 'Project' : 'Feature'} linked`);
         } catch (error) {
           handleError(error, useJson);
         }
       },
     );
 
-  goals.addCommand(createKeyResultsCommand(parseGoalId));
+  kr.command('unlink')
+    .description('Unlink a project or feature from a key result')
+    .requiredOption('--id <cuid>', 'Key result CUID')
+    .option('--project <cuid>', 'Project CUID')
+    .option('--feature <cuid>', 'Feature CUID')
+    .action(
+      async (
+        options: { id: string; project?: string; feature?: string },
+        cmd: Command,
+      ) => {
+        const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+        const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+        try {
+          if (!options.project === !options.feature) {
+            throw new Error('Pass exactly one of --project or --feature.');
+          }
+          const client = getClient();
+          const result = options.project
+            ? await client.goals.keyResults.unlinkProject({
+                keyResultId: options.id,
+                projectId: options.project,
+              })
+            : await client.goals.keyResults.unlinkFeature({
+                keyResultId: options.id,
+                featureId: options.feature!,
+              });
+          if (useJson) console.log(JSON.stringify(result, null, 2));
+          else console.log(`\n✓ ${options.project ? 'Project' : 'Feature'} unlinked`);
+        } catch (error) {
+          handleError(error, useJson);
+        }
+      },
+    );
 
+  return kr;
+}
+
+function createGoalCommentsCommand(): Command {
   const comment = new Command('comment').description(
     'Read and post comments on a goal. Mention teammates with --mention.',
   );
@@ -669,6 +707,550 @@ export function createGoalsCommand(): Command {
       }
     });
 
-  goals.addCommand(comment);
+  return comment;
+}
+
+/**
+ * `exponential goals …` — objectives (`Goal`, integer ids), their key results,
+ * and their comments.
+ *
+ * Three separate write paths on purpose. `update` is a partial update that
+ * sends only the flags you pass; `set-status`/`close` route through the
+ * status-only procedure; `reparent` writes the parent alone. Closing a quarter
+ * or moving a goal in the cascade should never risk a collateral write — an
+ * agent once archived a goal with a title-and-status update and orphaned it out
+ * of its workspace in the process.
+ */
+export function createGoalsCommand(): Command {
+  const goals = new Command('goals').description(
+    'Manage goals (objectives) and their key results. Objectives have integer ids; key results are CUIDs.',
+  );
+
+  goals
+    .command('list')
+    .description(
+      'List objectives, each with the projects linked to it — the join that ' +
+        'ties an action (which carries a projectId) back to a goal.',
+    )
+    .option('-w, --workspace <slug|id>', 'Workspace slug or ID (defaults to your default workspace)')
+    .option('--all-workspaces', 'List across every workspace you belong to')
+    .option('--period <period>', 'Filter by period, e.g. Q3-2026')
+    .option('--status <status>', `Filter by status: ${GOAL_STATUSES.join(', ')}`)
+    .option('--tree', 'Render the parent/child cascade instead of a flat list')
+    .action(
+      async (
+        options: {
+          workspace?: string;
+          allWorkspaces?: boolean;
+          period?: string;
+          status?: string;
+          tree?: boolean;
+        },
+        cmd: Command,
+      ) => {
+        const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+        const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+        try {
+          const status = validateGoalStatus(options.status);
+          const client = getClient();
+          const workspaces = await targetWorkspaces(client, options);
+
+          if (options.tree) {
+            // getGoalTree has no period filter, so --period is applied here.
+            // It only prunes roots — a matching child under a non-matching
+            // parent would otherwise vanish, which is the opposite of what a
+            // cascade view is for.
+            const trees = await fanOutByWorkspace(workspaces, (w) =>
+              client.goals.tree({ workspaceId: w.id, status }),
+            );
+            const filtered = options.period
+              ? trees.filter((g) => g.period === options.period)
+              : trees;
+            if (useJson) outputGoalTreeJson(filtered);
+            else outputGoalTreePretty(filtered);
+            return;
+          }
+
+          const list = await fanOutByWorkspace(workspaces, async (workspace) => {
+            const goals = await client.goals.list({
+              workspaceId: workspace.id,
+              period: options.period,
+              status,
+            });
+            // The server attaches `workspace`, but only since the goals
+            // release — fill it in from the workspace we just queried so a
+            // cross-workspace list is labelled either way.
+            return goals.map((g) => ({ ...g, workspace: g.workspace ?? workspace }));
+          });
+          if (useJson) outputGoalsJson(list);
+          else outputGoalsPretty(list);
+        } catch (error) {
+          handleError(error, useJson);
+        }
+      },
+    );
+
+  goals
+    .command('get <id>')
+    .description('Get an objective by its integer ID')
+    .action(async (id: string, _options: Record<string, never>, cmd: Command) => {
+      const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+      const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+      try {
+        const goal = await getClient().goals.get(parseGoalId(id));
+        if (useJson) outputGoalJson(goal);
+        else outputGoalPretty(goal);
+      } catch (error) {
+        handleError(error, useJson);
+      }
+    });
+
+  goals
+    .command('create')
+    .description('Create an objective')
+    .requiredOption('-t, --title <text>', 'Objective title')
+    .option('-w, --workspace <slug|id>', 'Workspace slug or ID (defaults to your default workspace)')
+    .option('--period <period>', 'Period, e.g. Q3-2026 or Annual-2026')
+    .option('--status <status>', `Status: ${GOAL_WRITABLE_STATUSES.join(', ')}`)
+    .option('-d, --description <text>', 'Description (markdown supported)')
+    .option('--why <text>', 'Why this goal matters')
+    .option('--dri <userId>', 'Directly responsible individual (user ID)')
+    .option('--parent <id>', 'Parent objective ID to nest under (max depth 5)')
+    .option('--project <cuid>', 'Link a project on creation')
+    .action(
+      async (
+        options: {
+          title: string;
+          workspace?: string;
+          period?: string;
+          status?: string;
+          description?: string;
+          why?: string;
+          dri?: string;
+          parent?: string;
+          project?: string;
+        },
+        cmd: Command,
+      ) => {
+        const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+        const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+        try {
+          const status = validateWritableGoalStatus(options.status);
+          const client = getClient();
+          const workspaceId = await resolveWorkspaceId(client, options.workspace);
+          const goal = await client.goals.create({
+            title: options.title,
+            workspaceId,
+            period: options.period,
+            status,
+            description: options.description,
+            whyThisGoal: options.why,
+            driUserId: options.dri,
+            parentGoalId: options.parent ? parseGoalId(options.parent) : undefined,
+            projectId: options.project,
+          });
+          if (useJson) outputGoalJson(goal);
+          else {
+            console.log('\n✓ Goal created');
+            outputGoalPretty(goal);
+          }
+        } catch (error) {
+          handleError(error, useJson);
+        }
+      },
+    );
+
+  goals
+    .command('update')
+    .description(
+      'Update an objective. Only the flags you pass are written — everything ' +
+        'else is left exactly as it is. For a status change use `set-status`; ' +
+        'to re-parent use `reparent`.',
+    )
+    .requiredOption('--id <n>', 'Objective ID (a number)')
+    .option('-t, --title <text>', 'New title')
+    .option('-d, --description <text>', 'New description ("none" clears it)')
+    .option('--why <text>', 'Why this goal matters ("none" clears it)')
+    .option('--period <period>', 'New period ("none" clears it)')
+    .option('--dri <userId>', 'Directly responsible individual (user ID)')
+    .option('--status <status>', `Status: ${GOAL_WRITABLE_STATUSES.join(', ')}`)
+    .option('--project <cuid>', 'Replace the project links with this project ("none" clears them)')
+    .option(
+      '-w, --workspace <slug|id|none>',
+      'Re-home the objective; "none" makes it personal',
+    )
+    .action(
+      async (
+        options: {
+          id: string;
+          title?: string;
+          description?: string;
+          why?: string;
+          period?: string;
+          dri?: string;
+          status?: string;
+          project?: string;
+          workspace?: string;
+        },
+        cmd: Command,
+      ) => {
+        const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+        const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+        try {
+          const status = validateWritableGoalStatus(options.status);
+          // "none" is the CLI's way of saying the explicit null the API wants;
+          // an omitted flag stays `undefined` and is never sent.
+          const clearable = (value: string | undefined) =>
+            value === undefined ? undefined : value === 'none' ? null : value;
+          const client = getClient();
+
+          // A slug has to become an id, so this one can't go through
+          // `clearable`. Omitted stays omitted: re-homing is exactly the write
+          // that orphaned goal 46 when it happened by accident.
+          let workspaceId: string | null | undefined;
+          if (options.workspace === 'none') workspaceId = null;
+          else if (options.workspace !== undefined) {
+            workspaceId = await resolveWorkspaceId(client, options.workspace);
+          }
+
+          const goal = await client.goals.update({
+            id: parseGoalId(options.id),
+            workspaceId,
+            title: options.title,
+            description: clearable(options.description),
+            whyThisGoal: clearable(options.why),
+            period: clearable(options.period),
+            driUserId: options.dri,
+            status,
+            projectId: clearable(options.project),
+          });
+          if (useJson) outputGoalJson(goal);
+          else {
+            console.log('\n✓ Goal updated');
+            outputGoalPretty(goal);
+          }
+        } catch (error) {
+          handleError(error, useJson);
+        }
+      },
+    );
+
+  goals
+    .command('set-status')
+    .description(
+      'Set an objective\'s status and nothing else. Routes through the ' +
+        'status-only procedure, so no other field can be touched.',
+    )
+    .requiredOption('--id <n>', 'Objective ID (a number)')
+    .requiredOption('--status <status>', `Status: ${GOAL_STATUSES.join(', ')}`)
+    .action(async (options: { id: string; status: string }, cmd: Command) => {
+      const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+      const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+      try {
+        const status = validateGoalStatus(options.status)!;
+        const goal = await getClient().goals.setStatus({
+          id: parseGoalId(options.id),
+          status,
+        });
+        if (useJson) outputGoalJson(goal);
+        else {
+          console.log(`\n✓ Goal status set to ${status}`);
+          outputGoalPretty(goal);
+        }
+      } catch (error) {
+        handleError(error, useJson);
+      }
+    });
+
+  goals
+    .command('close')
+    .description('Close out an objective — one command per goal when a quarter ends')
+    .requiredOption('--id <n>', 'Objective ID (a number)')
+    .option('--status <status>', 'completed (default) or archived', 'completed')
+    .action(async (options: { id: string; status: string }, cmd: Command) => {
+      const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+      const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+      try {
+        const status = validateGoalStatus(options.status)!;
+        // Same status-only path as set-status — never `updateGoal`.
+        const goal = await getClient().goals.setStatus({
+          id: parseGoalId(options.id),
+          status,
+        });
+        if (useJson) outputGoalJson(goal);
+        else {
+          console.log(`\n✓ Goal closed as ${status}`);
+          outputGoalPretty(goal);
+        }
+      } catch (error) {
+        handleError(error, useJson);
+      }
+    });
+
+  goals
+    .command('reparent')
+    .description(
+      'Move an objective under another (or detach it with --parent none). ' +
+        'Writes the parent alone.',
+    )
+    .requiredOption('--id <n>', 'Objective ID (a number)')
+    .requiredOption('--parent <id|none>', 'New parent objective ID, or "none" to detach')
+    .action(async (options: { id: string; parent: string }, cmd: Command) => {
+      const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+      const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+      try {
+        const goal = await getClient().goals.setParent({
+          id: parseGoalId(options.id),
+          parentGoalId: options.parent === 'none' ? null : parseGoalId(options.parent),
+        });
+        if (useJson) outputGoalJson(goal);
+        else {
+          console.log(
+            options.parent === 'none' ? '\n✓ Goal detached' : '\n✓ Goal re-parented',
+          );
+          outputGoalPretty(goal);
+        }
+      } catch (error) {
+        handleError(error, useJson);
+      }
+    });
+
+  goals
+    .command('delete')
+    .description(
+      'Delete an objective. Refuses while it still has key results — deleting an ' +
+        'objective deletes them too (KeyResult.goalId cascades), taking their ' +
+        'check-in history with them.',
+    )
+    .requiredOption('--id <n>', 'Objective ID (a number)')
+    .option(
+      '--with-key-results',
+      'Delete the objective and cascade-delete its key results (destructive)',
+    )
+    .action(
+      async (options: { id: string; withKeyResults?: boolean }, cmd: Command) => {
+        const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+        const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+        try {
+          const id = parseGoalId(options.id);
+          const client = getClient();
+          const goal = await client.goals.get(id);
+          const keyResults = goal.keyResults ?? [];
+          const children = goal.childGoals ?? [];
+
+          if (keyResults.length > 0 && !options.withKeyResults) {
+            const payload = {
+              deleted: false,
+              id,
+              reason: `has ${keyResults.length} key result(s)`,
+              keyResults: keyResults.map((kr) => ({ id: kr.id })),
+            };
+            if (useJson) console.log(JSON.stringify(payload, null, 2));
+            else {
+              console.error(
+                `Objective #${id} has ${keyResults.length} key result(s). Deleting it deletes them too.\n` +
+                  'Re-run with --with-key-results to go ahead, or move them with `goals kr update --id <cuid> --goal <other>`.',
+              );
+            }
+            process.exitCode = 1;
+            return;
+          }
+
+          await client.goals.delete(id);
+          const payload = {
+            deleted: true,
+            id,
+            keyResultsDeleted: keyResults.map((kr) => ({ id: kr.id })),
+            childGoalsDetached: children.map((c) => ({ id: c.id, title: c.title })),
+          };
+          if (useJson) console.log(JSON.stringify(payload, null, 2));
+          else {
+            console.log('✓ Goal deleted');
+            if (keyResults.length) {
+              console.log(`  ${keyResults.length} key result(s) deleted with it`);
+            }
+            if (children.length) {
+              console.log(`  ${children.length} sub-goal(s) left detached`);
+            }
+          }
+        } catch (error) {
+          handleError(error, useJson);
+        }
+      },
+    );
+
+  goals
+    .command('periods')
+    .description('List the conventional OKR period strings')
+    .action(async (_options: Record<string, never>, cmd: Command) => {
+      const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+      const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+      try {
+        const periods = await getClient().goals.periods();
+        if (useJson) outputGoalPeriodsJson(periods);
+        else outputGoalPeriodsPretty(periods);
+      } catch (error) {
+        handleError(error, useJson);
+      }
+    });
+
+  goals
+    .command('stats')
+    .description('Objective and key-result counts, average progress and confidence')
+    .option('-w, --workspace <slug|id>', 'Workspace slug or ID (defaults to your default workspace)')
+    .option('--period <period>', 'Period, e.g. Q3-2026')
+    .action(
+      async (options: { workspace?: string; period?: string }, cmd: Command) => {
+        const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+        const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+        try {
+          const client = getClient();
+          const workspaceId = await resolveWorkspaceId(client, options.workspace);
+          const stats = await client.goals.stats({
+            workspaceId,
+            period: options.period,
+          });
+          if (useJson) outputGoalStatsJson(stats);
+          else outputGoalStatsPretty(stats);
+        } catch (error) {
+          handleError(error, useJson);
+        }
+      },
+    );
+
+  goals.addCommand(createKeyResultsCommand());
+  goals.addCommand(createGoalCommentsCommand());
   return goals;
+}
+
+/**
+ * `exponential okrs …` — the objective-plus-key-results view.
+ *
+ * `goals list` answers "what are the objectives"; `okrs list` answers "how is
+ * the quarter going", nesting each objective's key results underneath it in one
+ * workspace-scoped call. Everything you can do to the parts still lives under
+ * `goals` / `goals kr` — this group is the combined read.
+ */
+export function createOkrsCommand(): Command {
+  const okrs = new Command('okrs').description(
+    'OKRs — objectives with their key results nested. Manage the parts with `goals` and `goals kr`.',
+  );
+
+  okrs
+    .command('list')
+    .description(
+      'List objectives with their key results. Defaults to the current ' +
+        'quarter — pass --period all for every period.',
+    )
+    .option('-w, --workspace <slug|id>', 'Workspace slug or ID (defaults to your default workspace)')
+    .option('--all-workspaces', 'List across every workspace you belong to')
+    .option(
+      '--period <period>',
+      `Period, e.g. Q3-2026, or "all" for every period (default: ${currentPeriod()})`,
+    )
+    .option('--paired-period', 'Also include the period\'s parent annual period')
+    .option(
+      '--status <status>',
+      `Keep only key results with this status: ${KEY_RESULT_STATUSES.join(', ')}`,
+    )
+    .option('--mine', 'Only objectives and key results you are the DRI for')
+    .action(
+      async (
+        options: {
+          workspace?: string;
+          allWorkspaces?: boolean;
+          period?: string;
+          pairedPeriod?: boolean;
+          status?: string;
+          mine?: boolean;
+        },
+        cmd: Command,
+      ) => {
+        const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+        const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+        try {
+          const status = validateKeyResultStatus(options.status);
+          const client = getClient();
+          const workspaces = await targetWorkspaces(client, options);
+          // "how is the quarter going" almost always means this quarter, so an
+          // omitted --period narrows to it. `all` is the escape hatch.
+          const period =
+            options.period === 'all' ? undefined : options.period ?? currentPeriod();
+
+          let objectives = (await fanOutByWorkspace(workspaces, async (workspace) => {
+            const found = await client.goals.keyResults.byObjective({
+              workspaceId: workspace.id,
+              period,
+              includePairedPeriod: options.pairedPeriod,
+              onlyMine: options.mine,
+            });
+            // getByObjective doesn't return the workspace; attach the one we
+            // queried so a cross-workspace list can label each row.
+            return found.map((o) => ({ ...o, workspace }));
+          })) as ObjectiveWithKeyResults[];
+
+          if (status) {
+            // getByObjective takes no status input, so this filters here —
+            // dropping non-matching key results and then any objective left
+            // with none, so "show me what's off-track" isn't padded with
+            // objectives that have nothing off-track.
+            objectives = objectives
+              .map((o) => ({
+                ...o,
+                keyResults: o.keyResults.filter(
+                  (kr) => (kr.statusOverride ?? kr.status) === status,
+                ),
+              }))
+              .filter((o) => o.keyResults.length > 0);
+          }
+
+          if (useJson) outputObjectivesJson(objectives);
+          else outputObjectivesPretty(objectives);
+        } catch (error) {
+          handleError(error, useJson);
+        }
+      },
+    );
+
+  okrs
+    .command('stats')
+    .description('Objective and key-result counts, average progress and confidence')
+    .option('-w, --workspace <slug|id>', 'Workspace slug or ID (defaults to your default workspace)')
+    .option('--period <period>', 'Period, e.g. Q3-2026')
+    .action(
+      async (options: { workspace?: string; period?: string }, cmd: Command) => {
+        const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+        const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+        try {
+          const client = getClient();
+          const workspaceId = await resolveWorkspaceId(client, options.workspace);
+          const stats = await client.goals.stats({
+            workspaceId,
+            period: options.period,
+          });
+          if (useJson) outputGoalStatsJson(stats);
+          else outputGoalStatsPretty(stats);
+        } catch (error) {
+          handleError(error, useJson);
+        }
+      },
+    );
+
+  okrs
+    .command('periods')
+    .description('List the conventional OKR period strings')
+    .action(async (_options: Record<string, never>, cmd: Command) => {
+      const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+      const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+      try {
+        const periods = await getClient().goals.periods();
+        if (useJson) outputGoalPeriodsJson(periods);
+        else outputGoalPeriodsPretty(periods);
+      } catch (error) {
+        handleError(error, useJson);
+      }
+    });
+
+  okrs.addCommand(createKeyResultsCommand());
+  return okrs;
 }
