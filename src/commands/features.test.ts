@@ -289,3 +289,82 @@ describe('features update --goal', () => {
     expect(exit).toHaveBeenCalledWith(1);
   });
 });
+
+describe('features get — key result links (ADR-0050)', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    Object.defineProperty(process.stdout, 'isTTY', { value: false, configurable: true });
+    process.exitCode = undefined;
+  });
+  afterEach(() => {
+    process.exitCode = originalExitCode;
+  });
+
+  const KR_LINK = {
+    assignedAt: new Date('2026-08-01'),
+    keyResult: {
+      id: 'kr1',
+      title: 'Ship 2 situational analysis modules',
+      period: 'Q3-2026',
+      goalId: 75,
+      status: 'on-track',
+      currentValue: 1,
+      targetValue: 2,
+      unit: 'count',
+      unitLabel: null,
+    },
+  };
+
+  it('carries the key results into --json, flattened off the join row', async () => {
+    makeClient({ feature: makeFeature({ keyResultLinks: [KR_LINK] }) });
+    const log = vi.spyOn(console, 'log');
+
+    await run(['get', 'feat1']);
+
+    expect(jsonFromLog(log).keyResults).toEqual([
+      {
+        keyResultId: 'kr1',
+        title: 'Ship 2 situational analysis modules',
+        period: 'Q3-2026',
+        goalId: 75,
+        status: 'on-track',
+        currentValue: 1,
+        targetValue: 2,
+        unit: 'count',
+      },
+    ]);
+  });
+
+  it('reports null rather than [] when the server predates the readback', async () => {
+    makeClient({ feature: makeFeature() });
+    const log = vi.spyOn(console, 'log');
+
+    await run(['get', 'feat1']);
+
+    // Distinguishes "this server cannot tell you" from "no key results linked".
+    expect(jsonFromLog(log).keyResults).toBeNull();
+  });
+
+  it('tolerates the lean list shape, where progress values are unselected', async () => {
+    const lean = { keyResult: { id: 'kr1', title: 'Ship 2', period: 'Q3-2026', goalId: 75 } };
+    makeClient({ feature: makeFeature({ keyResultLinks: [lean] }) });
+    const log = vi.spyOn(console, 'log');
+
+    await run(['get', 'feat1']);
+
+    expect(jsonFromLog(log).keyResults).toEqual([
+      {
+        keyResultId: 'kr1',
+        title: 'Ship 2',
+        period: 'Q3-2026',
+        goalId: 75,
+        status: null,
+        currentValue: null,
+        targetValue: null,
+        unit: null,
+      },
+    ]);
+  });
+});
