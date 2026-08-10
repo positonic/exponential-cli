@@ -9,6 +9,7 @@ import type {
   Deal,
   Epic,
   Feature,
+  FeatureKeyResultLink,
   FeatureScope,
   Goal,
   GoalPeriod,
@@ -844,6 +845,22 @@ export function outputFeaturePretty(feature: Feature): void {
   if (feature.priority != null) {
     console.log(`  ${chalk.magenta('Priority:')} ${feature.priority}`);
   }
+  if (feature.goal) {
+    console.log(`  ${chalk.blue('Objective:')} ${feature.goal.title} ${chalk.gray(`(${feature.goal.id})`)}`);
+  }
+  // The finer Feature->Key result edge (ADR-0050), printed beneath the
+  // Objective it is easily confused with.
+  if (feature.keyResultLinks?.length) {
+    console.log(`  ${chalk.blue('Key results:')}`);
+    for (const link of feature.keyResultLinks) {
+      const kr = link.keyResult;
+      const progress =
+        kr.currentValue != null && kr.targetValue != null
+          ? `${kr.currentValue}/${kr.targetValue}${kr.unit && kr.unit !== 'custom' ? ` ${kr.unit}` : ''}, `
+          : '';
+      console.log(`    · ${kr.title} ${chalk.gray(`(${progress}${kr.period}, ${kr.id})`)}`);
+    }
+  }
   if (feature._count?.tickets != null) {
     console.log(`  ${chalk.cyan('Tickets:')} ${feature._count.tickets}`);
   }
@@ -869,8 +886,35 @@ export function outputFeaturesPretty(features: Feature[]): void {
     const ticketCount = f._count?.tickets != null ? chalk.gray(` — ${f._count.tickets} tickets`) : '';
     console.log(`  ${statusBadge} ${chalk.bold(f.name)}${ticketCount}`);
     console.log(chalk.gray(`    ID: ${f.id}`));
+    // The KR column, one line per feature — the whole point of carrying the
+    // lean shape on `list` rather than making callers fetch each feature.
+    if (f.keyResultLinks?.length) {
+      const titles = f.keyResultLinks.map((l) => l.keyResult.title).join('; ');
+      console.log(chalk.gray(`    KRs: ${titles}`));
+    }
   }
   console.log();
+}
+
+/**
+ * One key result a feature executes, flattened for output. `currentValue` and
+ * friends are undefined on the lean `features list` shape; they are only
+ * selected on `features get`.
+ */
+function summarizeFeatureKeyResult(
+  link: FeatureKeyResultLink,
+): Record<string, unknown> {
+  const kr = link.keyResult;
+  return {
+    keyResultId: kr.id,
+    title: kr.title,
+    period: kr.period,
+    goalId: kr.goalId,
+    status: kr.status ?? null,
+    currentValue: kr.currentValue ?? null,
+    targetValue: kr.targetValue ?? null,
+    unit: kr.unit ?? null,
+  };
 }
 
 function transformFeature(feature: Feature): Record<string, unknown> {
@@ -885,6 +929,12 @@ function transformFeature(feature: Feature): Record<string, unknown> {
     priority: feature.priority,
     goalId: feature.goalId,
     goal: feature.goal ?? null,
+    // Flattened out of the join row (ADR-0050): callers building a per-feature
+    // "which key results does this move" column want the key results, not the
+    // edge rows. `goal` above is the coarser Objective alignment and is a
+    // different question - the two are allowed to disagree, so both ride along.
+    // Progress values are present on `features get` and absent on `list`.
+    keyResults: feature.keyResultLinks?.map(summarizeFeatureKeyResult) ?? null,
     counts: feature._count ?? null,
     createdAt: new Date(feature.createdAt).toISOString(),
     updatedAt: new Date(feature.updatedAt).toISOString(),
