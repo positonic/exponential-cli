@@ -250,6 +250,7 @@ export function createTicketsCommand(): Command {
     .option('--feature <id>', 'Feature CUID to attach to')
     .option('--scope <id>', 'Feature scope CUID to attach to (requires --feature)')
     .option('--epic <id>', 'Epic CUID to attach to')
+    .option('--cycle <id>', 'Cycle CUID to assign to')
     .option('--assignee <id>', 'Assignee user ID')
     .option('--branch <name>', 'Branch name')
     .option('--pr <url>', 'Pull request URL')
@@ -273,6 +274,7 @@ export function createTicketsCommand(): Command {
           feature?: string;
           scope?: string;
           epic?: string;
+          cycle?: string;
           assignee?: string;
           branch?: string;
           pr?: string;
@@ -304,6 +306,7 @@ export function createTicketsCommand(): Command {
             featureId: options.feature,
             scopeId: options.scope,
             epicId: options.epic,
+            cycleId: options.cycle,
             assigneeId: options.assignee,
             branchName: options.branch,
             prUrl: options.pr,
@@ -339,6 +342,7 @@ export function createTicketsCommand(): Command {
     .option('--points <n>', 'Story points (or "null" to clear)')
     .option('--feature <id>', 'Feature CUID (or "null" to detach)')
     .option('--epic <id>', 'Epic CUID (or "null" to detach)')
+    .option('--cycle <id>', 'Cycle CUID (or "null" to detach)')
     .option('--assignee <id>', 'Assignee user ID (or "null" to unassign)')
     .option('--branch <name>', 'Branch name (or "null")')
     .option('--pr <url>', 'PR URL (or "null")')
@@ -366,6 +370,7 @@ export function createTicketsCommand(): Command {
           points?: string;
           feature?: string;
           epic?: string;
+          cycle?: string;
           assignee?: string;
           branch?: string;
           pr?: string;
@@ -410,6 +415,7 @@ export function createTicketsCommand(): Command {
             points: parseNullableFloat(options.points),
             featureId: parseNullableString(options.feature),
             epicId: parseNullableString(options.epic),
+            cycleId: parseNullableString(options.cycle),
             assigneeId: parseNullableString(options.assignee),
             branchName: parseNullableString(options.branch),
             prUrl: parseNullableString(options.pr),
