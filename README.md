@@ -192,10 +192,10 @@ exponential meetings create -t "Weekly sync" --transcript-file ./sync.txt --note
 cat transcript.txt | exponential meetings create -t "Standup" --transcript-file - --date 2026-08-25T14:00
 
 # Update — only the fields you pass are written
-exponential meetings update <cuid> -t "Renamed" --summary "Recap ..."
+exponential meetings update --id <cuid> -t "Renamed" --summary "Recap ..."
 
-# Meeting notes: read raw (pipeable), replace, or append a block
-exponential meetings notes get <cuid>
+# Meeting notes: read raw Markdown (safe to redirect), replace, or append a block
+exponential meetings notes get <cuid> > notes.md   # --json for a {id, notes} envelope
 exponential meetings notes set <cuid> --file notes.md          # or inline, or --file - for stdin
 exponential meetings notes append <cuid> "Follow-up: ship it"  # separated by a blank line
 ```

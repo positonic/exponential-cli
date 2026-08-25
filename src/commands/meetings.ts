@@ -1,8 +1,8 @@
-import { readFileSync } from 'node:fs';
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { getClient } from '../client/index.js';
 import { handleError } from '../utils/errors.js';
+import { readText, parseDate } from '../utils/input.js';
 import { resolveWorkspaceId } from '../utils/resolve.js';
 import {
   shouldUseJson,
@@ -17,23 +17,6 @@ interface GlobalOptions {
   pretty?: boolean;
 }
 
-/** Text from an inline value, a --*-file path, or "-" for stdin. */
-function readText(inline?: string, file?: string): string | undefined {
-  if (inline !== undefined) return inline;
-  if (file === undefined) return undefined;
-  if (file === '-') return readFileSync(0, 'utf-8');
-  return readFileSync(file, 'utf-8');
-}
-
-function parseDate(value: string | undefined): Date | undefined {
-  if (value === undefined) return undefined;
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    throw new Error(`Invalid date: "${value}". Use ISO format, e.g. 2026-08-25 or 2026-08-25T14:00.`);
-  }
-  return date;
-}
-
 export function createMeetingsCommand(): Command {
   const meetings = new Command('meetings').description(
     'Manage meetings and their notes (recorded, imported, or manually created)',
@@ -41,7 +24,9 @@ export function createMeetingsCommand(): Command {
 
   meetings
     .command('list')
-    .description('List meetings you can see (owned, attended, or shared via project/workspace)')
+    .description(
+      'List meetings you can see (owned, attended, or shared via project/workspace). JSON rows carry hasNotes/hasSummary/hasTranscript flags instead of the bodies — use "get" for content.',
+    )
     .option('--workspace <slug|id>', 'Restrict to one workspace')
     .option('--mine', 'Only meetings you own or attended')
     .option('--archived', 'Include archived meetings')
@@ -73,7 +58,7 @@ export function createMeetingsCommand(): Command {
   meetings
     .command('get <id>')
     .description('Get a meeting: details, summary, and notes')
-    .option('--transcript', 'Also print the raw transcript')
+    .option('--transcript', 'Also print the raw transcript (pretty mode; JSON always includes it)')
     .action(
       async (id: string, options: { transcript?: boolean }, cmd: Command) => {
         const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
@@ -100,7 +85,7 @@ export function createMeetingsCommand(): Command {
     .option('--notes <markdown>', 'Meeting notes')
     .option('--notes-file <path>', 'Read the notes from a file ("-" = stdin)')
     .option('--description <text>', 'Short description')
-    .option('--date <iso>', 'When the meeting occurred (e.g. 2026-08-25T14:00)')
+    .option('--date <iso>', 'When the meeting occurred (e.g. 2026-08-25T14:00; a bare date is local midnight)')
     .option('--project <id>', 'Link to a project (the meeting inherits its workspace)')
     .option('--workspace <slug|id>', 'Workspace (omit for a personal meeting)')
     .action(
@@ -123,10 +108,13 @@ export function createMeetingsCommand(): Command {
         try {
           const client = getClient();
           const transcription = readText(options.transcript, options.transcriptFile);
-          if (!transcription) {
+          if (transcription === undefined) {
             throw new Error(
               'A transcript is required: pass --transcript <text> or --transcript-file <path|->.',
             );
+          }
+          if (transcription.trim() === '') {
+            throw new Error('The transcript is empty. The API requires a non-empty transcript.');
           }
           const workspaceId = options.workspace
             ? await resolveWorkspaceId(client, options.workspace)
@@ -152,8 +140,11 @@ export function createMeetingsCommand(): Command {
     );
 
   meetings
-    .command('update <id>')
-    .description('Update a meeting (only the fields you pass are written)')
+    .command('update')
+    .description(
+      'Update a meeting; only the fields you pass are written. Title and other fields are two API calls — on a mid-flight failure the title may already be saved.',
+    )
+    .requiredOption('--id <id>', 'Meeting CUID')
     .option('-t, --title <title>', 'New title')
     .option('--notes <markdown>', 'Replace the meeting notes')
     .option('--notes-file <path>', 'Read the new notes from a file ("-" = stdin)')
@@ -162,8 +153,8 @@ export function createMeetingsCommand(): Command {
     .option('--date <iso>', 'When the meeting occurred')
     .action(
       async (
-        id: string,
         options: {
+          id: string;
           title?: string;
           notes?: string;
           notesFile?: string;
@@ -176,11 +167,23 @@ export function createMeetingsCommand(): Command {
         const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
         const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
         try {
+          const notes = readText(options.notes, options.notesFile);
+          if (
+            options.title === undefined &&
+            notes === undefined &&
+            options.summary === undefined &&
+            options.description === undefined &&
+            options.date === undefined
+          ) {
+            throw new Error(
+              'Nothing to update. Pass at least one of --title, --notes, --notes-file, --summary, --description, --date.',
+            );
+          }
           const client = getClient();
           const meeting = await client.meetings.update({
-            id,
+            id: options.id,
             title: options.title,
-            notes: readText(options.notes, options.notesFile),
+            notes,
             summary: options.summary,
             description: options.description,
             meetingDate: parseDate(options.date),
@@ -197,27 +200,30 @@ export function createMeetingsCommand(): Command {
     );
 
   const notes = new Command('notes').description(
-    'Read and write a meeting\'s notes',
+    "Read and write a meeting's notes",
   );
 
   notes
     .command('get <id>')
-    .description('Print the meeting notes (raw Markdown, pipeable)')
+    .description(
+      'Print the meeting notes as raw Markdown (safe to redirect to a file); pass --json for a {id, notes} envelope',
+    )
     .action(async (id: string, _options: Record<string, never>, cmd: Command) => {
       const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
-      const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
       try {
         const client = getClient();
         const body = await client.meetings.getNotes(id);
-        if (useJson) {
+        if (globalOpts.json) {
           console.log(JSON.stringify({ id, notes: body }, null, 2));
-        } else if (body) {
-          console.log(body);
-        } else {
+        } else if (body !== null) {
+          // Raw body even when piped — this output round-trips into
+          // `notes set --file`, so it must never pick up a JSON envelope.
+          process.stdout.write(body.endsWith('\n') ? body : `${body}\n`);
+        } else if (process.stdout.isTTY) {
           console.log(chalk.gray('No notes yet.'));
         }
       } catch (error) {
-        handleError(error, useJson);
+        handleError(error, shouldUseJson(globalOpts.json, globalOpts.pretty));
       }
     });
 
@@ -251,7 +257,9 @@ export function createMeetingsCommand(): Command {
 
   notes
     .command('append <id> [notes]')
-    .description('Append a block to the meeting notes (separated by a blank line)')
+    .description(
+      'Append a block to the meeting notes (separated by a blank line). Read-modify-write: concurrent appends can lose one side.',
+    )
     .option('--file <path>', 'Read the block from a file ("-" = stdin)')
     .action(
       async (
