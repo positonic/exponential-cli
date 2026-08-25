@@ -45,15 +45,20 @@ function makeClient() {
   const update = vi.fn().mockResolvedValue(makeMeeting('m1'));
   const getNotes = vi.fn().mockResolvedValue(null);
   const setNotes = vi.fn().mockResolvedValue(makeMeeting('m1'));
+  const del = vi.fn().mockResolvedValue({ success: true });
+  const deleteMany = vi.fn().mockResolvedValue({ count: 0 });
   const appendNotes = vi.fn().mockResolvedValue(makeMeeting('m1'));
   const client = {
-    meetings: { list, get, create, update, getNotes, setNotes, appendNotes },
+    meetings: {
+      list, get, create, update, getNotes, setNotes, appendNotes,
+      delete: del, deleteMany,
+    },
   };
   vi.mocked(clientModule.getClient).mockReturnValue(
     client as unknown as ReturnType<typeof clientModule.getClient>,
   );
   vi.mocked(resolveModule.resolveWorkspaceId).mockResolvedValue('ws1');
-  return { list, get, create, update, getNotes, setNotes, appendNotes };
+  return { list, get, create, update, getNotes, setNotes, appendNotes, del, deleteMany };
 }
 
 async function run(args: string[]) {
@@ -268,5 +273,95 @@ describe('meetings notes', () => {
     const { appendNotes } = makeClient();
     await run(['notes', 'append', 'm1', 'follow-up']);
     expect(appendNotes).toHaveBeenCalledWith('m1', 'follow-up');
+  });
+});
+
+// Ids in these tests are cuid-shaped because the command validates the
+// shape before any API call.
+const ID1 = 'cmt0000000000000000000001';
+const ID2 = 'cmt0000000000000000000002';
+const ID3 = 'cmt0000000000000000000003';
+
+describe('meetings delete', () => {
+  it('refuses with no ids and never calls the API', async () => {
+    const { del, deleteMany } = makeClient();
+    await expect(run(['delete'])).rejects.toThrow();
+    expect(del).not.toHaveBeenCalled();
+    expect(deleteMany).not.toHaveBeenCalled();
+  });
+
+  it('refuses a whitespace-only ids file', async () => {
+    const { deleteMany } = makeClient();
+    const dir = mkdtempSync(join(tmpdir(), 'exp-cli-test-'));
+    const file = join(dir, 'ids.txt');
+    writeFileSync(file, '  \n\t\n');
+    await expect(run(['delete', '--ids-file', file])).rejects.toThrow();
+    expect(deleteMany).not.toHaveBeenCalled();
+  });
+
+  it('rejects garbage tokens before any API call', async () => {
+    const { del, deleteMany } = makeClient();
+    await expect(
+      run(['delete', '--force', ID1, '{', '"meetings":']),
+    ).rejects.toThrow();
+    expect(del).not.toHaveBeenCalled();
+    expect(deleteMany).not.toHaveBeenCalled();
+    expect(vi.mocked(console.log).mock.calls.join('\n')).toContain(
+      "don't look like meeting ids",
+    );
+  });
+
+  it('refuses multiple ids without --force', async () => {
+    const { deleteMany } = makeClient();
+    await expect(run(['delete', ID1, ID2])).rejects.toThrow();
+    expect(deleteMany).not.toHaveBeenCalled();
+    expect(vi.mocked(console.log).mock.calls.join('\n')).toContain('--force');
+  });
+
+  it('uses the single-id path for one id (precise errors), no --force needed', async () => {
+    const { del, deleteMany } = makeClient();
+    await run(['delete', ID1]);
+    expect(del).toHaveBeenCalledWith(ID1);
+    expect(deleteMany).not.toHaveBeenCalled();
+    expect(JSON.parse(loggedText())).toEqual({ requested: 1, count: 1, skipped: 0 });
+  });
+
+  it('bulk-deletes with --force, reports skips, and exits non-zero on a partial delete', async () => {
+    const { del, deleteMany } = makeClient();
+    deleteMany.mockResolvedValue({ count: 2 });
+    process.exitCode = 0;
+    await run(['delete', '--force', ID1, ID2, ID3]);
+    expect(del).not.toHaveBeenCalled();
+    expect(deleteMany).toHaveBeenCalledWith([ID1, ID2, ID3]);
+    expect(JSON.parse(loggedText())).toEqual({ requested: 3, count: 2, skipped: 1 });
+    expect(process.exitCode).toBe(1);
+    process.exitCode = 0;
+  });
+
+  it('merges and dedupes ids from --ids-file with the args', async () => {
+    const { deleteMany } = makeClient();
+    deleteMany.mockResolvedValue({ count: 3 });
+    const dir = mkdtempSync(join(tmpdir(), 'exp-cli-test-'));
+    const file = join(dir, 'ids.txt');
+    writeFileSync(file, `${ID2}\n${ID3}\n\n ${ID1} \n`);
+    process.exitCode = 0;
+    await run(['delete', '--force', ID1, '--ids-file', file]);
+    expect(deleteMany).toHaveBeenCalledWith([ID1, ID2, ID3]);
+    expect(process.exitCode).toBe(0);
+  });
+
+  it('chunks very large bulk deletes and sums the counts', async () => {
+    const { deleteMany } = makeClient();
+    deleteMany.mockImplementation((ids: string[]) =>
+      Promise.resolve({ count: ids.length }),
+    );
+    const many = Array.from({ length: 1200 }, (_, i) =>
+      `cmt${String(i).padStart(22, '0')}`,
+    );
+    process.exitCode = 0;
+    await run(['delete', '--force', ...many]);
+    expect(deleteMany).toHaveBeenCalledTimes(3);
+    expect(JSON.parse(loggedText())).toEqual({ requested: 1200, count: 1200, skipped: 0 });
+    expect(process.exitCode).toBe(0);
   });
 });
