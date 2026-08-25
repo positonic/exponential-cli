@@ -199,6 +199,57 @@ export function createMeetingsCommand(): Command {
       },
     );
 
+  meetings
+    .command('delete [ids...]')
+    .description(
+      'Permanently delete meetings you own. Pass one or more ids, and/or --ids-file with whitespace-separated ids ("-" = stdin). Bulk mode silently skips ids that are missing or not yours — the result reports how many were actually deleted.',
+    )
+    .option('--ids-file <path>', 'Read whitespace-separated meeting ids from a file ("-" = stdin)')
+    .action(
+      async (idArgs: string[], options: { idsFile?: string }, cmd: Command) => {
+        const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+        const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+        try {
+          const fromFile = readText(undefined, options.idsFile);
+          const ids = [
+            ...new Set([
+              ...idArgs,
+              ...(fromFile ? fromFile.split(/\s+/) : []),
+            ].filter((id) => id !== '')),
+          ];
+          if (ids.length === 0) {
+            throw new Error(
+              'Nothing to delete. Pass one or more meeting ids, or --ids-file <path|->.',
+            );
+          }
+          const client = getClient();
+          let count: number;
+          if (ids.length === 1) {
+            // Single-id path gets precise errors (NOT_FOUND / FORBIDDEN)
+            // instead of the bulk path's silent skip.
+            await client.meetings.delete(ids[0]!);
+            count = 1;
+          } else {
+            ({ count } = await client.meetings.deleteMany(ids));
+          }
+          if (useJson) {
+            console.log(JSON.stringify({ requested: ids.length, count }, null, 2));
+          } else {
+            console.log(`✓ Deleted ${count} of ${ids.length} meeting${ids.length === 1 ? '' : 's'}`);
+            if (count < ids.length) {
+              console.log(
+                chalk.yellow(
+                  `${ids.length - count} id(s) were skipped — not found, or not owned by you.`,
+                ),
+              );
+            }
+          }
+        } catch (error) {
+          handleError(error, useJson);
+        }
+      },
+    );
+
   const notes = new Command('notes').description(
     "Read and write a meeting's notes",
   );

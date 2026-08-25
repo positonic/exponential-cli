@@ -45,15 +45,20 @@ function makeClient() {
   const update = vi.fn().mockResolvedValue(makeMeeting('m1'));
   const getNotes = vi.fn().mockResolvedValue(null);
   const setNotes = vi.fn().mockResolvedValue(makeMeeting('m1'));
+  const del = vi.fn().mockResolvedValue({ success: true });
+  const deleteMany = vi.fn().mockResolvedValue({ count: 0 });
   const appendNotes = vi.fn().mockResolvedValue(makeMeeting('m1'));
   const client = {
-    meetings: { list, get, create, update, getNotes, setNotes, appendNotes },
+    meetings: {
+      list, get, create, update, getNotes, setNotes, appendNotes,
+      delete: del, deleteMany,
+    },
   };
   vi.mocked(clientModule.getClient).mockReturnValue(
     client as unknown as ReturnType<typeof clientModule.getClient>,
   );
   vi.mocked(resolveModule.resolveWorkspaceId).mockResolvedValue('ws1');
-  return { list, get, create, update, getNotes, setNotes, appendNotes };
+  return { list, get, create, update, getNotes, setNotes, appendNotes, del, deleteMany };
 }
 
 async function run(args: string[]) {
@@ -268,5 +273,41 @@ describe('meetings notes', () => {
     const { appendNotes } = makeClient();
     await run(['notes', 'append', 'm1', 'follow-up']);
     expect(appendNotes).toHaveBeenCalledWith('m1', 'follow-up');
+  });
+});
+
+describe('meetings delete', () => {
+  it('refuses with no ids and never calls the API', async () => {
+    const { del, deleteMany } = makeClient();
+    await expect(run(['delete'])).rejects.toThrow();
+    expect(del).not.toHaveBeenCalled();
+    expect(deleteMany).not.toHaveBeenCalled();
+  });
+
+  it('uses the single-id path for one id (precise errors)', async () => {
+    const { del, deleteMany } = makeClient();
+    await run(['delete', 'm1']);
+    expect(del).toHaveBeenCalledWith('m1');
+    expect(deleteMany).not.toHaveBeenCalled();
+    expect(JSON.parse(loggedText())).toEqual({ requested: 1, count: 1 });
+  });
+
+  it('bulk-deletes multiple ids and reports the server count', async () => {
+    const { del, deleteMany } = makeClient();
+    deleteMany.mockResolvedValue({ count: 2 });
+    await run(['delete', 'm1', 'm2', 'm3']);
+    expect(del).not.toHaveBeenCalled();
+    expect(deleteMany).toHaveBeenCalledWith(['m1', 'm2', 'm3']);
+    expect(JSON.parse(loggedText())).toEqual({ requested: 3, count: 2 });
+  });
+
+  it('merges and dedupes ids from --ids-file with the args', async () => {
+    const { deleteMany } = makeClient();
+    deleteMany.mockResolvedValue({ count: 3 });
+    const dir = mkdtempSync(join(tmpdir(), 'exp-cli-test-'));
+    const file = join(dir, 'ids.txt');
+    writeFileSync(file, 'm2\nm3\n\n m1 \n');
+    await run(['delete', 'm1', '--ids-file', file]);
+    expect(deleteMany).toHaveBeenCalledWith(['m1', 'm2', 'm3']);
   });
 });
