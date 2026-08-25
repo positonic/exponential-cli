@@ -1365,8 +1365,55 @@ function renderMeetingSummary(summary: string): string {
   return summary;
 }
 
+/**
+ * Pinned JSON shape for a meeting — agents parse this, so the server response
+ * is never serialized verbatim (it drags along embedding/analytics internals
+ * and any future server-side field lands straight in the public contract).
+ */
+function transformMeeting(m: Meeting): Record<string, unknown> {
+  return {
+    id: m.id,
+    sessionId: m.sessionId,
+    title: m.title,
+    description: m.description,
+    notes: m.notes,
+    summary: m.summary,
+    transcription: m.transcription,
+    meetingDate: m.meetingDate,
+    createdAt: m.createdAt,
+    updatedAt: m.updatedAt,
+    userId: m.userId,
+    projectId: m.projectId,
+    workspaceId: m.workspaceId,
+    archivedAt: m.archivedAt,
+    durationSeconds: m.durationSeconds ?? null,
+    participantCount: m.participantCount ?? null,
+    videoUrl: m.videoUrl ?? null,
+    project: m.project ?? null,
+    workspace: m.workspace ?? null,
+    sourceIntegration: m.sourceIntegration ?? null,
+    participants: m.participants ?? [],
+    actions: m.actions ?? [],
+  };
+}
+
+/**
+ * List rows swap the large bodies for presence flags: `meetings list` can
+ * cover every visible meeting, and full transcripts would flood the agents
+ * that parse this. `meetings get` carries the bodies.
+ */
+function transformMeetingListRow(m: Meeting): Record<string, unknown> {
+  const { notes, summary, transcription, ...rest } = transformMeeting(m);
+  return {
+    ...rest,
+    hasNotes: Boolean(notes),
+    hasSummary: Boolean(summary),
+    hasTranscript: Boolean(transcription),
+  };
+}
+
 export function outputMeetingJson(meeting: Meeting): void {
-  console.log(JSON.stringify(meeting, null, 2));
+  console.log(JSON.stringify(transformMeeting(meeting), null, 2));
 }
 
 export function outputMeetingPretty(
@@ -1425,7 +1472,13 @@ export function outputMeetingPretty(
 }
 
 export function outputMeetingsJson(meetings: Meeting[]): void {
-  console.log(JSON.stringify({ meetings, total: meetings.length }, null, 2));
+  console.log(
+    JSON.stringify(
+      { meetings: meetings.map(transformMeetingListRow), total: meetings.length },
+      null,
+      2,
+    ),
+  );
 }
 
 export function outputMeetingsPretty(meetings: Meeting[]): void {
