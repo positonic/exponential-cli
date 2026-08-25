@@ -175,6 +175,31 @@ exponential goals kr unlink --id <cuid> --project <cuid>
 exponential goals kr delete --id <cuid>
 ```
 
+### Meetings and meeting notes
+
+```bash
+# List meetings you can see (owned, attended, or shared via project/workspace)
+exponential meetings list
+exponential meetings list --workspace clear --mine
+exponential meetings list --archived
+
+# One meeting: details, participants, summary and notes
+exponential meetings get <cuid>
+exponential meetings get <cuid> --transcript   # also print the raw transcript
+
+# Create a meeting manually (a transcript is required by the API)
+exponential meetings create -t "Weekly sync" --transcript-file ./sync.txt --notes "Decisions: ..."
+cat transcript.txt | exponential meetings create -t "Standup" --transcript-file - --date 2026-08-25T14:00
+
+# Update — only the fields you pass are written
+exponential meetings update <cuid> -t "Renamed" --summary "Recap ..."
+
+# Meeting notes: read raw (pipeable), replace, or append a block
+exponential meetings notes get <cuid>
+exponential meetings notes set <cuid> --file notes.md          # or inline, or --file - for stdin
+exponential meetings notes append <cuid> "Follow-up: ship it"  # separated by a blank line
+```
+
 ### Projects
 
 ```bash

@@ -18,6 +18,7 @@ import type {
   KeyResult,
   KeyResultCheckIn,
   KnowledgePage,
+  Meeting,
   ObjectiveWithKeyResults,
   Organization,
   OverdueTriage,
@@ -1330,6 +1331,131 @@ export function outputPagesPretty(pages: KnowledgePage[]): void {
   for (const p of pages) {
     console.log(`  ${chalk.bold(p.title)}`);
     console.log(chalk.gray(`    ID: ${p.id}`));
+  }
+  console.log();
+}
+
+// ---------------------------------------------------------------------------
+// Meetings
+// ---------------------------------------------------------------------------
+
+function meetingWhen(meeting: Meeting): Date {
+  return new Date(meeting.meetingDate ?? meeting.createdAt);
+}
+
+/**
+ * AI-generated summaries are sometimes a stringified JSON object
+ * (`overview` / `detailed_breakdown` / ...) rather than plain Markdown.
+ * Render the readable parts in that case; otherwise print as-is.
+ */
+function renderMeetingSummary(summary: string): string {
+  if (!summary.trimStart().startsWith('{')) return summary;
+  try {
+    const parsed: unknown = JSON.parse(summary);
+    if (parsed && typeof parsed === 'object') {
+      const obj = parsed as { overview?: unknown; detailed_breakdown?: unknown };
+      const parts = [obj.overview, obj.detailed_breakdown].filter(
+        (v): v is string => typeof v === 'string' && v.length > 0,
+      );
+      if (parts.length > 0) return parts.join('\n\n');
+    }
+  } catch {
+    // not JSON after all — fall through to the raw text
+  }
+  return summary;
+}
+
+export function outputMeetingJson(meeting: Meeting): void {
+  console.log(JSON.stringify(meeting, null, 2));
+}
+
+export function outputMeetingPretty(
+  meeting: Meeting,
+  options: { transcript?: boolean } = {},
+): void {
+  console.log(chalk.gray('─'.repeat(50)));
+  console.log(`\n${chalk.bold(meeting.title ?? 'Untitled meeting')}`);
+  console.log(chalk.gray(`  ID: ${meeting.id}`));
+  console.log(`  ${chalk.gray('Date:')} ${meetingWhen(meeting).toLocaleString()}`);
+  if (meeting.workspace) {
+    console.log(`  ${chalk.gray('Workspace:')} ${meeting.workspace.name}`);
+  }
+  if (meeting.project) {
+    console.log(`  ${chalk.gray('Project:')} ${meeting.project.name}`);
+  }
+  if (meeting.sourceIntegration) {
+    console.log(`  ${chalk.gray('Source:')} ${meeting.sourceIntegration.provider}`);
+  }
+  if (meeting.durationSeconds) {
+    console.log(`  ${chalk.gray('Duration:')} ${Math.round(meeting.durationSeconds / 60)} min`);
+  }
+  if (meeting.archivedAt) {
+    console.log(`  ${chalk.yellow('Archived')}`);
+  }
+  if (meeting.participants && meeting.participants.length > 0) {
+    const people = meeting.participants
+      .map((p) => p.name ?? p.email)
+      .join(', ');
+    console.log(`  ${chalk.gray('Participants:')} ${people}`);
+  }
+  if (meeting.description) {
+    console.log(`\n${meeting.description}`);
+  }
+  if (meeting.summary) {
+    console.log(`\n${chalk.bold('Summary')}`);
+    console.log(renderMeetingSummary(meeting.summary));
+  }
+  if (meeting.notes) {
+    console.log(`\n${chalk.bold('Notes')}`);
+    console.log(meeting.notes);
+  } else {
+    console.log(chalk.gray('\nNo notes yet.'));
+  }
+  if (options.transcript) {
+    if (meeting.transcription) {
+      console.log(`\n${chalk.bold('Transcript')}`);
+      console.log(meeting.transcription);
+    } else {
+      console.log(chalk.gray('\nNo transcript.'));
+    }
+  } else if (meeting.transcription) {
+    console.log(chalk.gray('\n(transcript available — pass --transcript to print it)'));
+  }
+  console.log();
+}
+
+export function outputMeetingsJson(meetings: Meeting[]): void {
+  console.log(JSON.stringify({ meetings, total: meetings.length }, null, 2));
+}
+
+export function outputMeetingsPretty(meetings: Meeting[]): void {
+  if (meetings.length === 0) {
+    console.log(chalk.gray('No meetings found.'));
+    return;
+  }
+  console.log(chalk.bold(`\nMeetings (${meetings.length} total)`));
+  console.log(chalk.gray('─'.repeat(50)));
+  for (const m of meetings) {
+    const flags = [
+      m.notes ? 'notes' : null,
+      m.summary ? 'summary' : null,
+      m.transcription ? 'transcript' : null,
+    ].filter(Boolean);
+    const archived = m.archivedAt ? chalk.yellow(' [archived]') : '';
+    console.log(
+      `  ${chalk.bold(m.title ?? 'Untitled meeting')}${archived} ${chalk.gray(
+        meetingWhen(m).toLocaleDateString(),
+      )}`,
+    );
+    console.log(chalk.gray(`    ID: ${m.id}`));
+    const context = [
+      m.project ? `Project: ${m.project.name}` : null,
+      m.participantCount ? `${m.participantCount} participants` : null,
+      flags.length > 0 ? flags.join(', ') : null,
+    ].filter(Boolean);
+    if (context.length > 0) {
+      console.log(chalk.gray(`    ${context.join(' · ')}`));
+    }
   }
   console.log();
 }
