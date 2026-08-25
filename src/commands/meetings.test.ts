@@ -276,6 +276,12 @@ describe('meetings notes', () => {
   });
 });
 
+// Ids in these tests are cuid-shaped because the command validates the
+// shape before any API call.
+const ID1 = 'cmt0000000000000000000001';
+const ID2 = 'cmt0000000000000000000002';
+const ID3 = 'cmt0000000000000000000003';
+
 describe('meetings delete', () => {
   it('refuses with no ids and never calls the API', async () => {
     const { del, deleteMany } = makeClient();
@@ -284,21 +290,52 @@ describe('meetings delete', () => {
     expect(deleteMany).not.toHaveBeenCalled();
   });
 
-  it('uses the single-id path for one id (precise errors)', async () => {
-    const { del, deleteMany } = makeClient();
-    await run(['delete', 'm1']);
-    expect(del).toHaveBeenCalledWith('m1');
+  it('refuses a whitespace-only ids file', async () => {
+    const { deleteMany } = makeClient();
+    const dir = mkdtempSync(join(tmpdir(), 'exp-cli-test-'));
+    const file = join(dir, 'ids.txt');
+    writeFileSync(file, '  \n\t\n');
+    await expect(run(['delete', '--ids-file', file])).rejects.toThrow();
     expect(deleteMany).not.toHaveBeenCalled();
-    expect(JSON.parse(loggedText())).toEqual({ requested: 1, count: 1 });
   });
 
-  it('bulk-deletes multiple ids and reports the server count', async () => {
+  it('rejects garbage tokens before any API call', async () => {
+    const { del, deleteMany } = makeClient();
+    await expect(
+      run(['delete', '--force', ID1, '{', '"meetings":']),
+    ).rejects.toThrow();
+    expect(del).not.toHaveBeenCalled();
+    expect(deleteMany).not.toHaveBeenCalled();
+    expect(vi.mocked(console.log).mock.calls.join('\n')).toContain(
+      "don't look like meeting ids",
+    );
+  });
+
+  it('refuses multiple ids without --force', async () => {
+    const { deleteMany } = makeClient();
+    await expect(run(['delete', ID1, ID2])).rejects.toThrow();
+    expect(deleteMany).not.toHaveBeenCalled();
+    expect(vi.mocked(console.log).mock.calls.join('\n')).toContain('--force');
+  });
+
+  it('uses the single-id path for one id (precise errors), no --force needed', async () => {
+    const { del, deleteMany } = makeClient();
+    await run(['delete', ID1]);
+    expect(del).toHaveBeenCalledWith(ID1);
+    expect(deleteMany).not.toHaveBeenCalled();
+    expect(JSON.parse(loggedText())).toEqual({ requested: 1, count: 1, skipped: 0 });
+  });
+
+  it('bulk-deletes with --force, reports skips, and exits non-zero on a partial delete', async () => {
     const { del, deleteMany } = makeClient();
     deleteMany.mockResolvedValue({ count: 2 });
-    await run(['delete', 'm1', 'm2', 'm3']);
+    process.exitCode = 0;
+    await run(['delete', '--force', ID1, ID2, ID3]);
     expect(del).not.toHaveBeenCalled();
-    expect(deleteMany).toHaveBeenCalledWith(['m1', 'm2', 'm3']);
-    expect(JSON.parse(loggedText())).toEqual({ requested: 3, count: 2 });
+    expect(deleteMany).toHaveBeenCalledWith([ID1, ID2, ID3]);
+    expect(JSON.parse(loggedText())).toEqual({ requested: 3, count: 2, skipped: 1 });
+    expect(process.exitCode).toBe(1);
+    process.exitCode = 0;
   });
 
   it('merges and dedupes ids from --ids-file with the args', async () => {
@@ -306,8 +343,25 @@ describe('meetings delete', () => {
     deleteMany.mockResolvedValue({ count: 3 });
     const dir = mkdtempSync(join(tmpdir(), 'exp-cli-test-'));
     const file = join(dir, 'ids.txt');
-    writeFileSync(file, 'm2\nm3\n\n m1 \n');
-    await run(['delete', 'm1', '--ids-file', file]);
-    expect(deleteMany).toHaveBeenCalledWith(['m1', 'm2', 'm3']);
+    writeFileSync(file, `${ID2}\n${ID3}\n\n ${ID1} \n`);
+    process.exitCode = 0;
+    await run(['delete', '--force', ID1, '--ids-file', file]);
+    expect(deleteMany).toHaveBeenCalledWith([ID1, ID2, ID3]);
+    expect(process.exitCode).toBe(0);
+  });
+
+  it('chunks very large bulk deletes and sums the counts', async () => {
+    const { deleteMany } = makeClient();
+    deleteMany.mockImplementation((ids: string[]) =>
+      Promise.resolve({ count: ids.length }),
+    );
+    const many = Array.from({ length: 1200 }, (_, i) =>
+      `cmt${String(i).padStart(22, '0')}`,
+    );
+    process.exitCode = 0;
+    await run(['delete', '--force', ...many]);
+    expect(deleteMany).toHaveBeenCalledTimes(3);
+    expect(JSON.parse(loggedText())).toEqual({ requested: 1200, count: 1200, skipped: 0 });
+    expect(process.exitCode).toBe(0);
   });
 });
