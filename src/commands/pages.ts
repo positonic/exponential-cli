@@ -1,8 +1,8 @@
-import { readFileSync } from 'node:fs';
 import { Command } from 'commander';
 import { getClient } from '../client/index.js';
 import { createPageCommentsCommand } from './pageComments.js';
 import { handleError } from '../utils/errors.js';
+import { readText } from '../utils/input.js';
 import { resolveWorkspaceId } from '../utils/resolve.js';
 import {
   shouldUseJson,
@@ -15,14 +15,6 @@ import {
 interface GlobalOptions {
   json?: boolean;
   pretty?: boolean;
-}
-
-/** Body from -b text, --body-file path, or "-" for stdin. */
-function readBody(body?: string, bodyFile?: string): string | undefined {
-  if (body !== undefined) return body;
-  if (bodyFile === undefined) return undefined;
-  if (bodyFile === '-') return readFileSync(0, 'utf-8');
-  return readFileSync(bodyFile, 'utf-8');
 }
 
 export function createPagesCommand(): Command {
@@ -90,7 +82,7 @@ export function createPagesCommand(): Command {
           const page = await client.pages.create({
             workspaceId,
             title: options.title,
-            body: readBody(options.body, options.bodyFile),
+            body: readText(options.body, options.bodyFile),
           });
           if (useJson) outputPageJson(page);
           else {
@@ -124,7 +116,7 @@ export function createPagesCommand(): Command {
           const page = await client.pages.update({
             id: options.id,
             title: options.title,
-            body: readBody(options.body, options.bodyFile),
+            body: readText(options.body, options.bodyFile),
           });
           if (useJson) outputPageJson(page);
           else {
