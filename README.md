@@ -194,6 +194,11 @@ cat transcript.txt | exponential meetings create -t "Standup" --transcript-file 
 # Update — only the fields you pass are written
 exponential meetings update --id <cuid> -t "Renamed" --summary "Recap ..."
 
+# Permanently delete meetings you own (bulk mode skips ids that aren't yours and reports the real count)
+exponential meetings delete <cuid>
+exponential meetings delete <cuid> <cuid> <cuid>
+exponential meetings list --mine | jq -r '.meetings[].id' | exponential meetings delete --ids-file -
+
 # Meeting notes: read raw Markdown (safe to redirect), replace, or append a block
 exponential meetings notes get <cuid> > notes.md   # --json for a {id, notes} envelope
 exponential meetings notes set <cuid> --file notes.md          # or inline, or --file - for stdin
