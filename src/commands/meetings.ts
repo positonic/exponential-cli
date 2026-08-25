@@ -202,11 +202,16 @@ export function createMeetingsCommand(): Command {
   meetings
     .command('delete [ids...]')
     .description(
-      'Permanently delete meetings you own. Pass one or more ids, and/or --ids-file with whitespace-separated ids ("-" = stdin). Bulk mode silently skips ids that are missing or not yours — the result reports how many were actually deleted.',
+      'Permanently delete meetings you own. Pass one or more ids, and/or --ids-file with whitespace-separated ids ("-" = stdin). Deleting more than one id requires --force. Exit 0 only when everything requested was deleted.',
     )
     .option('--ids-file <path>', 'Read whitespace-separated meeting ids from a file ("-" = stdin)')
+    .option('--force', 'Confirm deleting more than one meeting in a single call')
     .action(
-      async (idArgs: string[], options: { idsFile?: string }, cmd: Command) => {
+      async (
+        idArgs: string[],
+        options: { idsFile?: string; force?: boolean },
+        cmd: Command,
+      ) => {
         const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
         const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
         try {
@@ -222,6 +227,20 @@ export function createMeetingsCommand(): Command {
               'Nothing to delete. Pass one or more meeting ids, or --ids-file <path|->.',
             );
           }
+          // A mis-built pipe (unfiltered jq output, an error message, the
+          // wrong file) must not turn into a silent no-op "success" — the
+          // bulk mutation skips unknown ids without complaint.
+          const malformed = ids.filter((id) => !/^[a-z][a-z0-9]{15,}$/i.test(id));
+          if (malformed.length > 0) {
+            throw new Error(
+              `These don't look like meeting ids: ${malformed.slice(0, 5).join(', ')}${malformed.length > 5 ? ` (+${malformed.length - 5} more)` : ''}. Nothing was deleted.`,
+            );
+          }
+          if (ids.length > 1 && !options.force) {
+            throw new Error(
+              `Refusing to delete ${ids.length} meetings without --force. Deletion is permanent.`,
+            );
+          }
           const client = getClient();
           let count: number;
           if (ids.length === 1) {
@@ -230,16 +249,30 @@ export function createMeetingsCommand(): Command {
             await client.meetings.delete(ids[0]!);
             count = 1;
           } else {
-            ({ count } = await client.meetings.deleteMany(ids));
+            // Chunked so one oversized request can't fail wholesale with
+            // zero deletions; counts are summed across chunks.
+            count = 0;
+            for (let i = 0; i < ids.length; i += 500) {
+              const chunk = ids.slice(i, i + 500);
+              count += (await client.meetings.deleteMany(chunk)).count;
+            }
+          }
+          const skipped = ids.length - count;
+          if (skipped > 0) {
+            // Same contract as the single-id error path: anything short of
+            // "everything requested was deleted" is a non-zero exit.
+            process.exitCode = 1;
           }
           if (useJson) {
-            console.log(JSON.stringify({ requested: ids.length, count }, null, 2));
+            console.log(
+              JSON.stringify({ requested: ids.length, count, skipped }, null, 2),
+            );
           } else {
             console.log(`✓ Deleted ${count} of ${ids.length} meeting${ids.length === 1 ? '' : 's'}`);
-            if (count < ids.length) {
+            if (skipped > 0) {
               console.log(
                 chalk.yellow(
-                  `${ids.length - count} id(s) were skipped — not found, or not owned by you.`,
+                  `${skipped} id(s) were skipped — not found, or not owned by you.`,
                 ),
               );
             }
