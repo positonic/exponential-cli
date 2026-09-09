@@ -26,7 +26,7 @@ npx exponential-cli --help
 ### 2. Configure the CLI
 
 ```bash
-exponential auth login --token <your-jwt-token> --api-url https://app.exponential.so
+exponential auth login --token <your-jwt-token> --api-url https://exponential.im
 ```
 
 ### 3. Verify Authentication

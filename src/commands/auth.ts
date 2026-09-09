@@ -12,7 +12,7 @@ export function createAuthCommand(): Command {
     .command('login')
     .description('Configure CLI with your API token')
     .requiredOption('--token <token>', 'JWT token from /tokens page')
-    .requiredOption('--api-url <url>', 'API URL (e.g., https://app.exponential.so)')
+    .requiredOption('--api-url <url>', 'API URL (e.g., https://exponential.im)')
     .action(async (options: { token: string; apiUrl: string }) => {
       try {
         // Normalize API URL (remove trailing slash)
