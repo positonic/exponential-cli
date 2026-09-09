@@ -19,14 +19,14 @@ npx exponential-cli --help
 ### 1. Generate an API Token
 
 1. Log into Exponential
-2. Navigate to `/tokens`
+2. Navigate to `/settings/api-keys`
 3. Create a new API key with type "JWT"
 4. Copy the generated token
 
 ### 2. Configure the CLI
 
 ```bash
-exponential auth login --token <your-jwt-token> --api-url https://app.exponential.so
+exponential auth login --token <your-jwt-token> --api-url https://www.exponential.im
 ```
 
 ### 3. Verify Authentication
