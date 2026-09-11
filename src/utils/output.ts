@@ -7,6 +7,8 @@ import type {
   Contact,
   ContactInteraction,
   Deal,
+  Decision,
+  DecisionListRow,
   Epic,
   Feature,
   FeatureKeyResultLink,
@@ -1511,6 +1513,283 @@ export function outputMeetingsPretty(meetings: Meeting[]): void {
     }
   }
   console.log();
+}
+
+// ---------------------------------------------------------------------------
+// Decisions
+// ---------------------------------------------------------------------------
+
+// One model covers both meeting panels: a decision that has been made, and an
+// OPEN QUESTION — which is simply a decision whose status is `OPEN`. The JSON
+// shapes carry an explicit `isOpenQuestion` flag so agents parsing this output
+// don't have to know that convention to act on it.
+
+function getDecisionStatusColor(
+  status: string,
+): 'gray' | 'blue' | 'yellow' | 'green' | 'red' {
+  switch (status) {
+    case 'OPEN':
+      return 'yellow';
+    case 'PROPOSED':
+      return 'blue';
+    case 'ACCEPTED':
+      return 'green';
+    case 'DEPRECATED':
+      return 'red';
+    default:
+      return 'gray';
+  }
+}
+
+/**
+ * Pinned JSON shape for a decision — agents parse this, so the server response
+ * is never serialized verbatim.
+ */
+function transformDecision(d: Decision): Record<string, unknown> {
+  return {
+    id: d.id,
+    workspaceId: d.workspaceId,
+    number: d.number,
+    label: d.label,
+    statement: d.statement,
+    body: d.body,
+    status: d.status,
+    isOpenQuestion: d.status === 'OPEN',
+    reviewState: d.reviewState,
+    source: d.source,
+    decidedAt: d.decidedAt,
+    ownerId: d.ownerId,
+    createdById: d.createdById,
+    confirmedById: d.confirmedById,
+    confirmedAt: d.confirmedAt,
+    transcriptionSessionId: d.transcriptionSessionId,
+    occurrenceId: d.occurrenceId,
+    productId: d.productId,
+    projectId: d.projectId,
+    goalId: d.goalId,
+    keyResultId: d.keyResultId,
+    supersededById: d.supersededById,
+    adrDocumentId: d.adrDocumentId,
+    evidence: d.evidence ?? [],
+    createdAt: d.createdAt,
+    updatedAt: d.updatedAt,
+    owner: d.owner ?? null,
+    deciders: d.deciders ?? [],
+    meeting: d.transcriptionSession ?? null,
+    product: d.product ?? null,
+    project: d.project ?? null,
+    goal: d.goal ?? null,
+    keyResult: d.keyResult ?? null,
+    supersededBy: d.supersededBy ?? null,
+    supersedes: d.supersedes ?? [],
+    links: d.links ?? [],
+    canEdit: d.canEdit ?? null,
+  };
+}
+
+function transformDecisionListRow(d: DecisionListRow): Record<string, unknown> {
+  return {
+    id: d.id,
+    workspaceId: d.workspaceId,
+    number: d.number,
+    label: d.label,
+    statement: d.statement,
+    status: d.status,
+    isOpenQuestion: d.status === 'OPEN',
+    reviewState: d.reviewState ?? null,
+    source: d.source,
+    decidedAt: d.decidedAt,
+    updatedAt: d.updatedAt,
+    transcriptionSessionId: d.transcriptionSessionId,
+    occurrenceId: d.occurrenceId,
+    productId: d.productId,
+    projectId: d.projectId,
+    supersededById: d.supersededById,
+    evidenceCount: d.evidenceCount,
+    linkCount: d._count?.links ?? 0,
+    deciderCount: d._count?.deciders ?? 0,
+    product: d.product ?? null,
+    project: d.project ?? null,
+    meeting: d.transcriptionSession ?? null,
+    supersededBy: d.supersededBy ?? null,
+  };
+}
+
+export function outputDecisionJson(decision: Decision): void {
+  console.log(JSON.stringify(transformDecision(decision), null, 2));
+}
+
+export function outputDecisionPretty(decision: Decision): void {
+  const color = getDecisionStatusColor(decision.status);
+  const kind = decision.status === 'OPEN' ? chalk.yellow(' [open question]') : '';
+  console.log(chalk.gray('─'.repeat(50)));
+  console.log(
+    `\n${chalk.gray(decision.label)} ${chalk.bold(decision.statement)}${kind}`,
+  );
+  console.log(chalk.gray(`  ID: ${decision.id}`));
+  console.log(`  ${chalk.gray('Status:')} ${chalk[color](decision.status)}`);
+  console.log(`  ${chalk.gray('Source:')} ${decision.source}`);
+  if (decision.reviewState && decision.reviewState !== 'CONFIRMED') {
+    console.log(`  ${chalk.yellow(decision.reviewState)}`);
+  }
+  if (decision.decidedAt) {
+    console.log(
+      `  ${chalk.gray('Decided:')} ${new Date(decision.decidedAt).toLocaleString()}`,
+    );
+  }
+  if (decision.transcriptionSession) {
+    console.log(
+      `  ${chalk.gray('Meeting:')} ${decision.transcriptionSession.title ?? 'Untitled'} (${decision.transcriptionSession.id})`,
+    );
+  }
+  if (decision.product) {
+    console.log(`  ${chalk.gray('Product:')} ${decision.product.name}`);
+  }
+  if (decision.project) {
+    console.log(`  ${chalk.gray('Project:')} ${decision.project.name}`);
+  }
+  if (decision.owner) {
+    console.log(`  ${chalk.gray('Owner:')} ${decision.owner.name ?? decision.owner.id}`);
+  }
+  if (decision.deciders && decision.deciders.length > 0) {
+    const people = decision.deciders
+      .map((d) => (d.email ? `${d.name} <${d.email}>` : d.name))
+      .join(', ');
+    console.log(`  ${chalk.gray('Deciders:')} ${people}`);
+  }
+  if (decision.supersededBy) {
+    console.log(
+      `  ${chalk.gray('Superseded by:')} D-${decision.supersededBy.number} ${decision.supersededBy.statement}`,
+    );
+  }
+  if (decision.supersedes && decision.supersedes.length > 0) {
+    for (const prior of decision.supersedes) {
+      console.log(
+        `  ${chalk.gray('Supersedes:')} D-${prior.number} ${prior.statement}`,
+      );
+    }
+  }
+  if (decision.links && decision.links.length > 0) {
+    console.log(`  ${chalk.gray('Implemented by:')}`);
+    for (const link of decision.links) {
+      const target = link.ticket
+        ? `${link.ticket.shortId ?? `#${link.ticket.number}`} ${link.ticket.title}`
+        : link.feature
+          ? `feature: ${link.feature.name}`
+          : '(unknown)';
+      console.log(chalk.gray(`    ${target}  [link ${link.id}]`));
+    }
+  }
+  if (decision.evidence && decision.evidence.length > 0) {
+    console.log(`\n${chalk.bold('Evidence')}`);
+    for (const turn of decision.evidence) {
+      const who = turn.speaker ? `${turn.speaker}: ` : '';
+      console.log(chalk.gray(`  [${turn.turnIndex}] ${who}${turn.text}`));
+    }
+  }
+  if (decision.body) {
+    console.log(`\n${decision.body}`);
+  }
+  console.log();
+}
+
+export function outputDecisionsJson(
+  decisions: DecisionListRow[],
+  extra: Record<string, unknown> = {},
+): void {
+  console.log(
+    JSON.stringify(
+      {
+        decisions: decisions.map(transformDecisionListRow),
+        total: decisions.length,
+        ...extra,
+      },
+      null,
+      2,
+    ),
+  );
+}
+
+export function outputDecisionsPretty(decisions: DecisionListRow[]): void {
+  if (decisions.length === 0) {
+    console.log(chalk.gray('No decisions found.'));
+    return;
+  }
+  const openCount = decisions.filter((d) => d.status === 'OPEN').length;
+  console.log(
+    chalk.bold(
+      `\nDecisions (${decisions.length} total, ${openCount} open question${openCount === 1 ? '' : 's'})`,
+    ),
+  );
+  console.log(chalk.gray('─'.repeat(50)));
+  for (const d of decisions) {
+    const color = getDecisionStatusColor(d.status);
+    const draft =
+      d.reviewState && d.reviewState !== 'CONFIRMED'
+        ? chalk.yellow(` [${d.reviewState.toLowerCase()}]`)
+        : '';
+    console.log(
+      `  ${chalk.gray(d.label)} ${chalk.bold(d.statement)}${draft} ${chalk[color](`[${d.status}]`)}`,
+    );
+    console.log(chalk.gray(`    ID: ${d.id}`));
+    const context = [
+      d.product ? `Product: ${d.product.name}` : null,
+      d.transcriptionSession
+        ? `Meeting: ${d.transcriptionSession.title ?? d.transcriptionSession.id}`
+        : null,
+      d.decidedAt ? `Decided ${new Date(d.decidedAt).toLocaleDateString()}` : null,
+      d.evidenceCount > 0 ? `${d.evidenceCount} evidence` : null,
+      d._count?.links ? `${d._count.links} linked` : null,
+    ].filter(Boolean);
+    if (context.length > 0) {
+      console.log(chalk.gray(`    ${context.join(' · ')}`));
+    }
+  }
+  console.log();
+}
+
+export interface BatchDecisionResult {
+  index: number;
+  success: boolean;
+  decision?: Decision;
+  statement?: string;
+  error?: string;
+}
+
+export function outputDecisionBatchJson(results: BatchDecisionResult[]): void {
+  console.log(
+    JSON.stringify(
+      {
+        results: results.map((r) => ({
+          index: r.index,
+          success: r.success,
+          statement: r.statement ?? r.decision?.statement ?? null,
+          decision: r.decision ? transformDecision(r.decision) : null,
+          error: r.error ?? null,
+        })),
+        total: results.length,
+        succeeded: results.filter((r) => r.success).length,
+        failed: results.filter((r) => !r.success).length,
+      },
+      null,
+      2,
+    ),
+  );
+}
+
+export function outputDecisionBatchPretty(results: BatchDecisionResult[]): void {
+  for (const r of results) {
+    const statement = r.statement ?? r.decision?.statement ?? '';
+    if (r.success) {
+      console.log(
+        `  ${chalk.green('✓')} #${r.index}: ${chalk.gray(r.decision?.label ?? '')} ${statement}`,
+      );
+    } else {
+      console.log(`  ${chalk.red('✗')} #${r.index}: ${statement} — ${r.error ?? 'failed'}`);
+    }
+  }
+  const ok = results.filter((r) => r.success).length;
+  console.log(chalk.bold(`\n${ok}/${results.length} decisions logged`));
 }
 
 // ---------------------------------------------------------------------------
