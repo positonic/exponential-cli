@@ -14,6 +14,8 @@ import {
   outputTimeBatchPretty,
   outputTimeConfirmJson,
   outputTimeConfirmPretty,
+  outputDayReportJson,
+  outputDayReportPretty,
 } from '../utils/output.js';
 
 interface GlobalOptions {
@@ -299,6 +301,32 @@ export function createTimeCommand(): Command {
         const result = await client.time.confirmDay(options.date, workspaceId);
         if (useJson) outputTimeConfirmJson(result, options.date);
         else outputTimeConfirmPretty(result, options.date);
+      } catch (error) {
+        handleError(error);
+      }
+    });
+
+  time
+    .command('report')
+    .description(
+      "One day's report — the numbers the /time Day tab shows: attention hours (each covered minute once), session hours (the plain sum), agent-run time on its own, hours by Product and by Action with overlapping minutes split evenly, and the unassigned and proposed counts. JSON when piped or with --json.",
+    )
+    .requiredOption('-d, --date <YYYY-MM-DD>', 'The day (local time)')
+    .option('-w, --workspace <slug|id>', 'Only entries in this workspace (default: all)')
+    .action(async (options: { date: string; workspace?: string }, cmd: Command) => {
+      const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+      const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+      try {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(options.date)) {
+          throw new Error(`--date must be YYYY-MM-DD, got "${options.date}".`);
+        }
+        const client = getClient();
+        const workspaceId = options.workspace
+          ? await resolveWorkspaceId(client, options.workspace)
+          : undefined;
+        const report = await client.time.dayReport(options.date, workspaceId);
+        if (useJson) outputDayReportJson(report, options.date);
+        else outputDayReportPretty(report, options.date);
       } catch (error) {
         handleError(error);
       }

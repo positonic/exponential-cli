@@ -39,6 +39,7 @@ import type {
   FeatureComment,
   PageComment,
   TicketDetail,
+  DayReport,
   TimeConfirmDayResult,
   TimeEntry,
   TimeLogBatchResult,
@@ -2517,4 +2518,66 @@ export function outputTimeBatchPretty(results: TimeLogBatchResult[]): void {
   }
   const ok = results.filter((r) => r.success).length;
   console.log(chalk.bold(`\n${ok}/${results.length} entries logged`));
+}
+
+/** `time report`: the day report as JSON, entries in the same shape as `time list`. */
+export function outputDayReportJson(report: DayReport, date: string): void {
+  console.log(
+    JSON.stringify(
+      {
+        date,
+        attentionMinutes: report.attentionMinutes,
+        sessionMinutes: report.sessionMinutes,
+        agentRunMinutes: report.agentRunMinutes,
+        unassignedCount: report.unassignedCount,
+        proposedCount: report.proposedCount,
+        byProduct: report.byProduct,
+        byAction: report.byAction,
+        flags: report.flags,
+        entries: report.entries.map((e) => ({
+          ...transformTimeEntry(e),
+          productId: e.productId,
+          productName: e.productName,
+          isAgentRun: e.isAgentRun,
+          flags: e.flags,
+          ticket: e.action.ticket
+            ? { id: e.action.ticket.id, number: e.action.ticket.number, shortId: e.action.ticket.shortId }
+            : null,
+        })),
+      },
+      null,
+      2,
+    ),
+  );
+}
+
+export function outputDayReportPretty(report: DayReport, date: string): void {
+  console.log(chalk.bold(`\n${date}`));
+  console.log(
+    `  ${chalk.bold(formatMinutes(report.attentionMinutes))} attention · ${formatMinutes(report.sessionMinutes)} session · ${formatMinutes(report.agentRunMinutes)} agent-run` +
+      (report.proposedCount > 0 ? chalk.yellow(` · ${report.proposedCount} proposed`) : '') +
+      (report.unassignedCount > 0 ? chalk.yellow(` · ${report.unassignedCount} unassigned`) : ''),
+  );
+  if (report.entries.length === 0) {
+    console.log(chalk.gray('  No time recorded.'));
+    return;
+  }
+  console.log(chalk.bold('\nBy product'));
+  for (const row of report.byProduct) {
+    console.log(`  ${formatMinutes(row.minutes).padStart(7)}  ${row.productId ? row.name : chalk.yellow(row.name)}`);
+  }
+  console.log(chalk.bold('\nBy action'));
+  for (const row of report.byAction) {
+    const ticket = row.ticket
+      ? chalk.gray(` ${row.ticket.shortId ?? `#${row.ticket.number}`}`)
+      : row.projectId
+        ? chalk.gray(` · ${row.projectName ?? 'project'}`)
+        : chalk.yellow(' [unassigned]');
+    const agent = row.agentRunMinutes > 0 ? chalk.gray(` (+${formatMinutes(row.agentRunMinutes)} agent-run)`) : '';
+    const proposed = row.proposedCount > 0 ? chalk.yellow(` ${row.proposedCount} proposed`) : '';
+    console.log(`  ${formatMinutes(row.minutes).padStart(7)}  ${row.name}${ticket}${agent}${proposed}`);
+  }
+  if (report.flags.length > 0) {
+    console.log(chalk.yellow(`\n${report.flags.length} manual entr${report.flags.length === 1 ? 'y looks' : 'ies look'} like a forgotten timer`));
+  }
 }
