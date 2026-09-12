@@ -46,14 +46,15 @@ function makeClient() {
     entries.map((e, index) => ({ index, success: true, outcome: 'created', sourceRef: e.sourceRef, entry: makeEntry(e) })),
   );
   const list = vi.fn().mockResolvedValue([makeEntry(), makeEntry({ id: 'e2', status: 'CONFIRMED', source: 'manual', sourceRef: null, note: null })]);
+  const confirmDay = vi.fn().mockResolvedValue({ confirmed: 2 });
   const upsertBySource = vi.fn().mockResolvedValue({
     action: { id: 'a1', name: 'Action modal close latency', status: 'ACTIVE', priority: 'Quick', kanbanStatus: null, project: null },
     outcome: 'created',
   });
-  const client = { time: { log, logBatch, list }, actions: { upsertBySource } };
+  const client = { time: { log, logBatch, list, confirmDay }, actions: { upsertBySource } };
   vi.mocked(clientModule.getClient).mockReturnValue(client as unknown as ReturnType<typeof clientModule.getClient>);
   vi.mocked(resolveModule.resolveWorkspaceId).mockResolvedValue('ws1');
-  return { log, logBatch, list, upsertBySource };
+  return { log, logBatch, list, confirmDay, upsertBySource };
 }
 
 async function run(args: string[], command = createTimeCommand) {
@@ -250,5 +251,31 @@ describe('actions upsert', () => {
     const payload = JSON.parse(loggedText()) as { outcome: string; action: { id: string } };
     expect(payload.outcome).toBe('created');
     expect(payload.action.id).toBe('a1');
+  });
+});
+
+describe('time confirm', () => {
+  it('confirms the day and prints the count', async () => {
+    const { confirmDay } = makeClient();
+    await run(['confirm', '--date', '2026-09-11']);
+    expect(confirmDay).toHaveBeenCalledWith('2026-09-11', undefined);
+    expect(JSON.parse(loggedText())).toEqual({ date: '2026-09-11', confirmed: 2 });
+  });
+
+  it('resolves --workspace and rejects a malformed date first', async () => {
+    const { confirmDay } = makeClient();
+    await run(['confirm', '--date', '2026-09-11', '--workspace', 'syntrofi']);
+    expect(confirmDay).toHaveBeenCalledWith('2026-09-11', 'ws1');
+    await expect(run(['confirm', '--date', 'today'])).rejects.toThrow('process.exit(1)');
+    expect(confirmDay).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('time log — V2 outcomes', () => {
+  it('prints merged and dropped results without an entry', async () => {
+    const { log } = makeClient();
+    log.mockResolvedValueOnce({ entry: null, outcome: 'merged', pieces: [], mergedInto: ['manual-1'] });
+    await run(['log', '--action', 'a1', '--from', '2026-09-11T14:57', '--to', '2026-09-11T15:22', '--ref', 'r']);
+    expect(JSON.parse(loggedText())).toEqual({ outcome: 'merged', entry: null, pieces: [], mergedInto: ['manual-1'] });
   });
 });

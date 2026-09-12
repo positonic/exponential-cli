@@ -39,6 +39,7 @@ import type {
   FeatureComment,
   PageComment,
   TicketDetail,
+  TimeConfirmDayResult,
   TimeEntry,
   TimeLogBatchResult,
   TimeLogResult,
@@ -2391,18 +2392,52 @@ function statusBadge(status: TimeEntry['status']): string {
 
 export function outputTimeLogJson(result: TimeLogResult): void {
   console.log(
-    JSON.stringify({ outcome: result.outcome, entry: transformTimeEntry(result.entry) }, null, 2),
+    JSON.stringify(
+      {
+        outcome: result.outcome,
+        entry: result.entry ? transformTimeEntry(result.entry) : null,
+        pieces: (result.pieces ?? []).map(transformTimeEntry),
+        mergedInto: result.mergedInto ?? [],
+      },
+      null,
+      2,
+    ),
   );
 }
 
 export function outputTimeLogPretty(result: TimeLogResult): void {
-  const e = result.entry;
-  const verb = { created: 'Logged', updated: 'Updated', left: 'Left untouched (already confirmed)' }[result.outcome];
-  console.log(
-    `${chalk.green('✓')} ${verb}: ${clock(e.startedAt)}–${e.endedAt ? clock(e.endedAt) : 'now'} ${chalk.bold(formatMinutes(entryMinutes(e)))} ${statusBadge(e.status)} ${e.action?.name ?? e.actionId}`,
-  );
-  if (e.note) console.log(chalk.gray(`  ${e.note}`));
-  console.log(chalk.gray(`  ID: ${e.id}${e.sourceRef ? `  ref: ${e.sourceRef}` : ''}  owner: ${e.userId}`));
+  if (result.outcome === 'merged') {
+    console.log(
+      `${chalk.green('✓')} Merged into your manual time (${(result.mergedInto ?? []).length} entr${(result.mergedInto ?? []).length === 1 ? 'y' : 'ies'} annotated); nothing new written.`,
+    );
+    return;
+  }
+  if (result.outcome === 'dropped' || !result.entry) {
+    console.log(`${chalk.yellow('–')} Dropped: your manual time already covers every minute of it.`);
+    return;
+  }
+  const pieces = result.pieces && result.pieces.length > 0 ? result.pieces : [result.entry];
+  const verb = { created: 'Logged', updated: 'Updated', left: 'Left untouched (already confirmed)' }[result.outcome] ?? result.outcome;
+  for (const e of pieces) {
+    console.log(
+      `${chalk.green('✓')} ${verb}: ${clock(e.startedAt)}–${e.endedAt ? clock(e.endedAt) : 'now'} ${chalk.bold(formatMinutes(entryMinutes(e)))} ${statusBadge(e.status)} ${e.action?.name ?? e.actionId}`,
+    );
+    if (e.note) console.log(chalk.gray(`  ${e.note}`));
+    console.log(chalk.gray(`  ID: ${e.id}${e.sourceRef ? `  ref: ${e.sourceRef}` : ''}  owner: ${e.userId}`));
+  }
+  if (pieces.length > 1) console.log(chalk.gray(`  split into ${pieces.length} pieces around your manual time`));
+}
+
+export function outputTimeConfirmJson(result: TimeConfirmDayResult, date: string): void {
+  console.log(JSON.stringify({ date, confirmed: result.confirmed }, null, 2));
+}
+
+export function outputTimeConfirmPretty(result: TimeConfirmDayResult, date: string): void {
+  if (result.confirmed === 0) {
+    console.log(chalk.gray(`Nothing proposed on ${date}; nothing to confirm.`));
+    return;
+  }
+  console.log(`${chalk.green('✓')} Confirmed ${result.confirmed} ${result.confirmed === 1 ? 'entry' : 'entries'} on ${date}.`);
 }
 
 export function outputTimeEntriesJson(entries: TimeEntry[], date: string): void {
