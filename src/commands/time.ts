@@ -12,6 +12,8 @@ import {
   outputTimeEntriesPretty,
   outputTimeBatchJson,
   outputTimeBatchPretty,
+  outputTimeConfirmJson,
+  outputTimeConfirmPretty,
 } from '../utils/output.js';
 
 interface GlobalOptions {
@@ -276,5 +278,32 @@ export function createTimeCommand(): Command {
       }
     });
 
+  time
+    .command('confirm')
+    .description(
+      "Confirm a day: every PROPOSED entry of yours that starts that day becomes CONFIRMED and the Actions' spent time moves. Human only — run it with your personal credentials; an agent key is refused.",
+    )
+    .requiredOption('-d, --date <YYYY-MM-DD>', 'The day (local time)')
+    .option('-w, --workspace <slug|id>', 'Only entries in this workspace (default: all)')
+    .action(async (options: { date: string; workspace?: string }, cmd: Command) => {
+      const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+      const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+      try {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(options.date)) {
+          throw new Error(`--date must be YYYY-MM-DD, got "${options.date}".`);
+        }
+        const client = getClient();
+        const workspaceId = options.workspace
+          ? await resolveWorkspaceId(client, options.workspace)
+          : undefined;
+        const result = await client.time.confirmDay(options.date, workspaceId);
+        if (useJson) outputTimeConfirmJson(result, options.date);
+        else outputTimeConfirmPretty(result, options.date);
+      } catch (error) {
+        handleError(error);
+      }
+    });
+
   return time;
 }
+
