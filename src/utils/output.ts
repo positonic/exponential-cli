@@ -76,10 +76,12 @@ export function transformAction(action: Action): ActionOutput {
       slug: action.workspace.slug,
       name: action.workspace.name,
     } : null,
-    assignees: action.assignees?.map(a => ({
-      id: a.user.id,
-      name: a.user.name,
-      email: a.user.email,
+    // `action.upsertBySource` returns assignees as bare `{ userId }` rows;
+    // every other procedure nests the user. Accept both.
+    assignees: action.assignees?.map((a) => ({
+      id: a.user?.id ?? a.userId ?? '',
+      name: a.user?.name ?? null,
+      email: a.user?.email ?? null,
     })) ?? [],
     createdAt: action.createdAt?.toISOString() ?? new Date().toISOString(),
     completedAt: action.completedAt?.toISOString() ?? null,
