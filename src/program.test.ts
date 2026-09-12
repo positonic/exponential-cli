@@ -95,6 +95,7 @@ describe('root --version does not shadow subcommand flags', () => {
 
   it('bare `exponential --version` is recognised for the compatibility shim', () => {
     expect(isBareVersionRequest(['--version'])).toBe(true);
+    expect(isBareVersionRequest(['--json', '--version'])).toBe(true);
     expect(isBareVersionRequest(['-V'])).toBe(false);
     expect(isBareVersionRequest(['features', 'scopes', 'add', '--version', 'V1'])).toBe(false);
     expect(isBareVersionRequest([])).toBe(false);

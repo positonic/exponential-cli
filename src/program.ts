@@ -34,9 +34,13 @@ export const PKG_VERSION: string = JSON.parse(
 // handled by isBareVersionRequest() before parsing.
 export const CLI_VERSION_FLAGS = '-V, --cli-version';
 
-/** True when the user ran plain `exponential --version` (the pre-1.15.1 spelling). */
+/**
+ * True when the user asked for the CLI version with the pre-1.15.1 spelling:
+ * `--version` is present and no subcommand is named (every arg is a flag).
+ * `features scopes add --version V1` names a subcommand, so it is never bare.
+ */
 export function isBareVersionRequest(args: string[]): boolean {
-  return args.length === 1 && args[0] === '--version';
+  return args.includes('--version') && args.every((arg) => arg.startsWith('-'));
 }
 
 export function buildProgram(): Command {
