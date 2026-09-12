@@ -504,6 +504,81 @@ describe('decisions draft extract', () => {
   });
 });
 
+describe('decisions create --from-file shared flags', () => {
+  it('applies --decider to entries that name none', async () => {
+    const { create } = makeClient();
+    const file = writeTemp('batch.json', JSON.stringify([{ statement: 'One' }]));
+    await run(['create', '--from-file', file, '--decider', 'Ada <ada@example.com>']);
+    expect(create.mock.calls[0]?.[0]).toMatchObject({
+      deciders: [{ name: 'Ada', email: 'ada@example.com' }],
+    });
+  });
+
+  it("lets an entry's own deciders win over the flag", async () => {
+    const { create } = makeClient();
+    const file = writeTemp(
+      'batch.json',
+      JSON.stringify([{ statement: 'One', deciders: ['Grace'] }]),
+    );
+    await run(['create', '--from-file', file, '--decider', 'Ada <ada@example.com>']);
+    expect(create.mock.calls[0]?.[0]).toMatchObject({ deciders: [{ name: 'Grace' }] });
+  });
+
+  it('refuses per-decision content flags rather than ignoring them', async () => {
+    const { create } = makeClient();
+    const batch = writeTemp('batch.json', JSON.stringify([{ statement: 'One' }]));
+    const body = writeTemp('body.md', '# shared?');
+    await expect(
+      run(['create', '--from-file', batch, '--body-file', body]),
+    ).rejects.toThrow('process.exit(1)');
+    expect(create).not.toHaveBeenCalled();
+  });
+});
+
+describe('decisions create --from-file validation', () => {
+  it('rejects an unknown field instead of dropping it', () => {
+    expect(() =>
+      parseBatchFile('[{"statement":"One","decider":"Ada"}]'),
+    ).toThrow('decider');
+  });
+
+  it('rejects a goalId written as a string', () => {
+    expect(() => parseBatchFile('[{"statement":"One","goalId":"12"}]')).toThrow(
+      'must be a number',
+    );
+  });
+
+  it('accepts every documented field', () => {
+    const entry = {
+      statement: 'One',
+      body: 'why',
+      status: 'OPEN',
+      source: 'AGENT',
+      meeting: 'm1',
+      transcriptionSessionId: 'm1',
+      productId: 'p1',
+      projectId: 'pr1',
+      goalId: 12,
+      keyResultId: 'kr1',
+      occurrenceId: 'o1',
+      decidedAt: '2026-09-10',
+      ownerId: 'u1',
+      deciders: ['Ada'],
+      evidence: [{ turnIndex: 1, text: 'hi' }],
+    };
+    expect(parseBatchFile(JSON.stringify([entry]))).toHaveLength(1);
+  });
+});
+
+describe('decisions list --adr', () => {
+  it('queries the ADR alone, without the discarded log query', async () => {
+    const { list, listForAdr } = makeClient();
+    await run(['list', '--adr', 'adr1']);
+    expect(listForAdr).toHaveBeenCalledWith('ws1', 'adr1');
+    expect(list).not.toHaveBeenCalled();
+  });
+});
+
 describe('decisions update', () => {
   it('refuses an update with no fields', async () => {
     const { update } = makeClient();

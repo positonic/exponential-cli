@@ -178,6 +178,25 @@ interface BatchItem {
   evidence?: unknown;
 }
 
+/** Every key a `--from-file` entry may carry; anything else is a typo. */
+const BATCH_ITEM_KEYS = new Set<keyof BatchItem>([
+  'statement',
+  'body',
+  'status',
+  'source',
+  'meeting',
+  'transcriptionSessionId',
+  'productId',
+  'projectId',
+  'goalId',
+  'keyResultId',
+  'occurrenceId',
+  'decidedAt',
+  'ownerId',
+  'deciders',
+  'evidence',
+]) as Set<string>;
+
 export function parseBatchFile(raw: string): BatchItem[] {
   let parsed: unknown;
   try {
@@ -210,6 +229,20 @@ export function parseBatchFile(raw: string): BatchItem[] {
     const entry = item as BatchItem;
     if (typeof entry.statement !== 'string' || entry.statement.trim() === '') {
       throw new Error(`Decision[${i}] needs a non-empty "statement".`);
+    }
+    // These files are usually generated. A key this reader doesn't know is a
+    // typo or a wrong field name, and dropping it silently would file the
+    // decision without the data its author meant to attach.
+    const unknown = Object.keys(entry).filter(
+      (key) => !BATCH_ITEM_KEYS.has(key),
+    );
+    if (unknown.length > 0) {
+      throw new Error(
+        `Decision[${i}] has unknown field(s): ${unknown.join(', ')}. Accepted: ${[...BATCH_ITEM_KEYS].join(', ')}.`,
+      );
+    }
+    if (entry.goalId !== undefined && typeof entry.goalId !== 'number') {
+      throw new Error(`Decision[${i}].goalId must be a number, not a string.`);
     }
     return entry;
   });
@@ -331,22 +364,24 @@ export function createDecisionsCommand(): Command {
           }
 
           const workspaceId = await resolveWorkspaceId(client, options.workspace);
-          const rows = await client.decisions.list({
-            workspaceId,
-            statuses: options.status.length > 0 ? options.status : undefined,
-            sources: options.source.length > 0 ? options.source : undefined,
-            productId: await resolveProductFilter(client, workspaceId, options.product),
-            includeWorkspaceWide: options.includeWorkspaceWide,
-            projectId: options.project,
-            search: options.search,
-            number: parsePositiveInt(options.number, '--number'),
-            limit: parsePositiveInt(options.limit, '--limit'),
-          });
-          const adrRows = options.adr
+          // `listForAdr` is its own query, not a filter on the log — running
+          // the unbounded list first and discarding it is a wasted round trip
+          // over every decision the caller can see.
+          const rows = options.adr
             ? await client.decisions.listForAdr(workspaceId, options.adr)
-            : null;
-          if (useJson) outputDecisionsJson(adrRows ?? rows, { workspaceId });
-          else outputDecisionsPretty(adrRows ?? rows);
+            : await client.decisions.list({
+                workspaceId,
+                statuses: options.status.length > 0 ? options.status : undefined,
+                sources: options.source.length > 0 ? options.source : undefined,
+                productId: await resolveProductFilter(client, workspaceId, options.product),
+                includeWorkspaceWide: options.includeWorkspaceWide,
+                projectId: options.project,
+                search: options.search,
+                number: parsePositiveInt(options.number, '--number'),
+                limit: parsePositiveInt(options.limit, '--limit'),
+              });
+          if (useJson) outputDecisionsJson(rows, { workspaceId });
+          else outputDecisionsPretty(rows);
         } catch (error) {
           handleError(error, useJson);
         }
@@ -469,9 +504,23 @@ export function createDecisionsCommand(): Command {
             occurrenceId: options.occurrence,
             decidedAt,
             ownerId: options.owner,
+            deciders: options.decider.length > 0 ? options.decider : undefined,
           };
 
           if (options.fromFile) {
+            // Body and evidence are per-decision content, not scope that can
+            // be shared across 40 rows. Silently ignoring them would file the
+            // batch with the wrong bodies and say nothing.
+            const perEntryOnly = [
+              options.body !== undefined ? '--body' : null,
+              options.bodyFile !== undefined ? '--body-file' : null,
+              options.evidenceFile !== undefined ? '--evidence-file' : null,
+            ].filter((flag): flag is string => flag !== null);
+            if (perEntryOnly.length > 0) {
+              throw new Error(
+                `${perEntryOnly.join(', ')} ${perEntryOnly.length === 1 ? 'is' : 'are'} per-decision content — put "body" and "evidence" on each entry in --from-file instead.`,
+              );
+            }
             const items = parseBatchFile(readText(undefined, options.fromFile)!);
             const results: BatchDecisionResult[] = [];
             // Sequential on purpose: decisions take their workspace sequence
@@ -516,7 +565,7 @@ export function createDecisionsCommand(): Command {
                       ? parseDate(item.decidedAt)
                       : defaults.decidedAt,
                   ownerId: typeof item.ownerId === 'string' ? item.ownerId : defaults.ownerId,
-                  deciders: batchDeciders(item.deciders, index) ?? undefined,
+                  deciders: batchDeciders(item.deciders, index) ?? defaults.deciders,
                   evidence:
                     item.evidence === undefined
                       ? undefined

@@ -274,6 +274,14 @@ input — `statement` is the only required field:
 Entries are written one at a time so a failure names the entry that failed; the
 exit code is non-zero unless every entry landed.
 
+Scope flags on the command (`--meeting`, `--workspace`, `--product`, `--source`,
+`--status`, `--decided-at`, `--decider`, ...) apply to every entry that doesn't
+set its own. `--body`, `--body-file` and `--evidence-file` are per-decision
+content rather than shared scope, so they are refused alongside `--from-file` —
+put `body` and `evidence` on the entries. An entry carrying a field this format
+doesn't know (a typo'd `"decider"`, say) is rejected rather than filed without
+it.
+
 **Evidence is checked.** Turns are quotes from the meeting's transcript: the
 `turnIndex` must resolve and the words must be that turn's (compared loosely for
 case, punctuation and whitespace). Quotes that don't match are dropped by the
