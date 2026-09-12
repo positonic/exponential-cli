@@ -207,6 +207,91 @@ exponential meetings notes set <cuid> --file notes.md          # or inline, or -
 exponential meetings notes append <cuid> "Follow-up: ship it"  # separated by a blank line
 ```
 
+### Decisions and open questions
+
+The workspace Decision Log. **An open question is a decision with `--status OPEN`** —
+there is no separate model, and that is exactly what a meeting's "Open questions"
+panel shows.
+
+```bash
+# The log, and the open questions in it
+exponential decisions list --workspace clear
+exponential decisions list --workspace clear --status OPEN
+exponential decisions list --workspace clear --product clear --search "retention"
+exponential decisions list --workspace clear --number 3 --limit 20   # D-0003; cap the page
+
+# Everything logged from one meeting — both panels (drafts too, if you can edit it)
+exponential decisions list --meeting <meeting-cuid>
+
+# One decision in full: body, evidence, deciders, chain and links
+exponential decisions get <cuid>
+
+# Log a decision from a meeting. Markdown bodies come from a file or stdin.
+exponential decisions create -s "Ship the importer behind a flag" \
+  --status ACCEPTED --source AGENT --meeting <meeting-cuid> \
+  --body-file ./decision.md \
+  --decider "Ada Lovelace <ada@example.com>" --decider "Grace Hopper"
+
+# Log an open question from the same meeting
+exponential decisions create -s "Do we backfill historical rows?" \
+  --status OPEN --meeting <meeting-cuid>
+
+# Bulk: a JSON array of decisions in one call — the flags become its defaults.
+# This is the path for filing everything that came out of one meeting.
+exponential decisions create --from-file ./decisions.json --meeting <meeting-cuid> --source AGENT
+jq '.decisions' notes.json | exponential decisions create --from-file - --meeting <meeting-cuid>
+
+# Answer an open question; supersede or deprecate a decision
+exponential decisions status --id <cuid> --status ACCEPTED
+exponential decisions status --id <cuid> --status SUPERSEDED --superseded-by <cuid>
+
+# Record what implements it (unlink takes the LINK id, from `decisions get`)
+exponential decisions link --id <cuid> --ticket <ticket-cuid>
+exponential decisions unlink --link <link-cuid>
+
+# Let the server propose decisions from a meeting, then review them
+exponential decisions draft extract --meeting <meeting-cuid>
+exponential decisions draft confirm --id <cuid>
+exponential decisions draft reject --id <cuid>
+```
+
+`--from-file` takes a JSON array (or `{"decisions": [...]}`), each entry a create
+input — `statement` is the only required field:
+
+```json
+[
+  {
+    "statement": "Ship the importer behind a flag",
+    "body": "## Context\n...\n## Consequences\n...",
+    "status": "ACCEPTED",
+    "deciders": ["Ada Lovelace <ada@example.com>"],
+    "evidence": [{ "turnIndex": 41, "speaker": "Ada", "text": "Behind a flag then." }]
+  },
+  { "statement": "Do we backfill historical rows?", "status": "OPEN" }
+]
+```
+
+Entries are written one at a time so a failure names the entry that failed; the
+exit code is non-zero unless every entry landed.
+
+Scope flags on the command (`--meeting`, `--workspace`, `--product`, `--source`,
+`--status`, `--decided-at`, `--decider`, ...) apply to every entry that doesn't
+set its own. `--body`, `--body-file` and `--evidence-file` are per-decision
+content rather than shared scope, so they are refused alongside `--from-file` —
+put `body` and `evidence` on the entries. An entry carrying a field this format
+doesn't know (a typo'd `"decider"`, say) is rejected rather than filed without
+it.
+
+**Evidence is checked.** Turns are quotes from the meeting's transcript: the
+`turnIndex` must resolve and the words must be that turn's (compared loosely for
+case, punctuation and whitespace). Quotes that don't match are dropped by the
+server without complaint, and `speaker`/`startTime` are replaced with the
+transcript's own values — so evidence always needs `--meeting`, and the CLI
+refuses it without one rather than letting the server reject the whole call.
+
+Statuses: `OPEN` (an open question) · `PROPOSED` · `ACCEPTED` · `SUPERSEDED` ·
+`DEPRECATED`. The last two are reached with `decisions status`, never at creation.
+
 ### Projects
 
 ```bash
