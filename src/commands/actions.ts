@@ -1,12 +1,14 @@
 import { Command } from 'commander';
 import { getClient } from '../client/index.js';
 import { handleError } from '../utils/errors.js';
+import { resolveWorkspaceId } from '../utils/resolve.js';
 import {
   shouldUseJson,
   outputActionsJson,
   outputActionsPretty,
   outputActionJson,
   outputActionPretty,
+  outputActionUpsertJson,
   outputCommentJson,
   outputCommentPretty,
   outputCommentsJson,
@@ -405,6 +407,58 @@ export function createActionsCommand(): Command {
         handleError(error, useJson);
       }
     });
+
+
+  actions
+    .command('upsert')
+    .description(
+      'One Action per external source: find by (--workspace, --source-type, --source-id), refresh its title and links, else create it. The Daily worklog uses --source-type claude-session --source-id <conversation id>.',
+    )
+    .requiredOption('--source-type <type>', 'e.g. claude-session')
+    .requiredOption('--source-id <id>', 'The source\'s own id; the same pair always maps to the same Action')
+    .requiredOption('-t, --title <title>', 'Action title (refreshed on every call)')
+    .option('-w, --workspace <slug|id>', 'Workspace (defaults to your default workspace)')
+    .option('-d, --description <text>', 'Description')
+    .option('--project <id>', 'Link to a project CUID in the same workspace')
+    .option('--ticket <id>', 'Link to a ticket CUID whose product is in the same workspace')
+    .action(
+      async (
+        options: {
+          sourceType: string;
+          sourceId: string;
+          title: string;
+          workspace?: string;
+          description?: string;
+          project?: string;
+          ticket?: string;
+        },
+        cmd: Command,
+      ) => {
+        const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+        const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+        try {
+          const client = getClient();
+          const workspaceId = await resolveWorkspaceId(client, options.workspace);
+          const result = await client.actions.upsertBySource({
+            sourceType: options.sourceType,
+            sourceId: options.sourceId,
+            name: options.title,
+            workspaceId,
+            description: options.description,
+            projectId: options.project,
+            ticketId: options.ticket,
+          });
+          if (useJson) {
+            outputActionUpsertJson(result);
+          } else {
+            console.log(result.outcome === 'created' ? 'Created action:' : 'Updated action:');
+            outputActionPretty(result.action);
+          }
+        } catch (error) {
+          handleError(error);
+        }
+      },
+    );
 
   const comment = new Command('comment')
     .description('Manage comments on an action');
