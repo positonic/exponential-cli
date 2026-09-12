@@ -14,6 +14,7 @@ import { createProductsCommand } from './commands/products.js';
 import { createProjectsCommand } from './commands/projects.js';
 import { createSearchCommand } from './commands/search.js';
 import { createTicketsCommand } from './commands/tickets.js';
+import { createTimeCommand } from './commands/time.js';
 import { createWorkspacesCommand } from './commands/workspaces.js';
 import { createGoalsCommand, createOkrsCommand } from './commands/goals.js';
 import { readFileSync } from 'node:fs';
@@ -77,6 +78,7 @@ export function buildProgram(): Command {
   program.addCommand(createProjectsCommand());
   program.addCommand(createSearchCommand());
   program.addCommand(createTicketsCommand());
+  program.addCommand(createTimeCommand());
   program.addCommand(createWorkspacesCommand());
   program.addCommand(createGoalsCommand());
   program.addCommand(createOkrsCommand());

@@ -39,6 +39,9 @@ import type {
   FeatureComment,
   PageComment,
   TicketDetail,
+  TimeEntry,
+  TimeLogBatchResult,
+  TimeLogResult,
   UserStory,
   Workspace,
   WorkspaceOutput,
@@ -73,10 +76,12 @@ export function transformAction(action: Action): ActionOutput {
       slug: action.workspace.slug,
       name: action.workspace.name,
     } : null,
-    assignees: action.assignees?.map(a => ({
-      id: a.user.id,
-      name: a.user.name,
-      email: a.user.email,
+    // `action.upsertBySource` returns assignees as bare `{ userId }` rows;
+    // every other procedure nests the user. Accept both.
+    assignees: action.assignees?.map((a) => ({
+      id: a.user?.id ?? a.userId ?? '',
+      name: a.user?.name ?? null,
+      email: a.user?.email ?? null,
     })) ?? [],
     createdAt: action.createdAt?.toISOString() ?? new Date().toISOString(),
     completedAt: action.completedAt?.toISOString() ?? null,
@@ -113,6 +118,11 @@ export function transformWorkspace(workspace: Workspace): WorkspaceOutput {
 export function outputActionJson(action: Action): void {
   const output = transformAction(action);
   console.log(JSON.stringify(output, null, 2));
+}
+
+/** `actions upsert`: the action plus whether it was created or refreshed. */
+export function outputActionUpsertJson(result: { action: Action; outcome: 'created' | 'updated' }): void {
+  console.log(JSON.stringify({ outcome: result.outcome, action: transformAction(result.action) }, null, 2));
 }
 
 // Output single action in pretty format
@@ -2332,4 +2342,144 @@ export function outputProjectPretty(project: ProjectDetail): void {
     console.log(`  ${chalk.cyan('Actions:')} ${project.actions.length}`);
   }
   console.log();
+}
+
+// ---------------------------------------------------------------------------
+// Time entries (Daily worklog, ADR-0061)
+// ---------------------------------------------------------------------------
+
+function formatMinutes(totalMins: number): string {
+  if (totalMins <= 0) return '0m';
+  const h = Math.floor(totalMins / 60);
+  const m = totalMins % 60;
+  if (h === 0) return `${m}m`;
+  if (m === 0) return `${h}h`;
+  return `${h}h ${m}m`;
+}
+
+function entryMinutes(entry: TimeEntry): number {
+  const end = entry.endedAt ? new Date(entry.endedAt) : new Date();
+  const ms = end.getTime() - new Date(entry.startedAt).getTime();
+  return ms <= 0 ? 0 : Math.round(ms / 60_000);
+}
+
+function clock(date: Date | string): string {
+  const d = new Date(date);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+export function transformTimeEntry(entry: TimeEntry) {
+  return {
+    id: entry.id,
+    userId: entry.userId,
+    actionId: entry.actionId,
+    actionName: entry.action?.name ?? null,
+    projectId: entry.action?.projectId ?? null,
+    workspaceId: entry.workspaceId,
+    startedAt: entry.startedAt,
+    endedAt: entry.endedAt,
+    minutes: entryMinutes(entry),
+    status: entry.status,
+    source: entry.source,
+    sourceRef: entry.sourceRef,
+    note: entry.note,
+    createdByAgentId: entry.createdByAgentId,
+  };
+}
+
+function statusBadge(status: TimeEntry['status']): string {
+  return status === 'PROPOSED' ? chalk.yellow('[PROPOSED]') : chalk.green('[CONFIRMED]');
+}
+
+export function outputTimeLogJson(result: TimeLogResult): void {
+  console.log(
+    JSON.stringify({ outcome: result.outcome, entry: transformTimeEntry(result.entry) }, null, 2),
+  );
+}
+
+export function outputTimeLogPretty(result: TimeLogResult): void {
+  const e = result.entry;
+  const verb = { created: 'Logged', updated: 'Updated', left: 'Left untouched (already confirmed)' }[result.outcome];
+  console.log(
+    `${chalk.green('✓')} ${verb}: ${clock(e.startedAt)}–${e.endedAt ? clock(e.endedAt) : 'now'} ${chalk.bold(formatMinutes(entryMinutes(e)))} ${statusBadge(e.status)} ${e.action?.name ?? e.actionId}`,
+  );
+  if (e.note) console.log(chalk.gray(`  ${e.note}`));
+  console.log(chalk.gray(`  ID: ${e.id}${e.sourceRef ? `  ref: ${e.sourceRef}` : ''}  owner: ${e.userId}`));
+}
+
+export function outputTimeEntriesJson(entries: TimeEntry[], date: string): void {
+  const rows = entries.map(transformTimeEntry);
+  console.log(
+    JSON.stringify(
+      {
+        date,
+        entries: rows,
+        total: rows.length,
+        totalMinutes: rows.reduce((acc, r) => acc + r.minutes, 0),
+        proposed: rows.filter((r) => r.status === 'PROPOSED').length,
+      },
+      null,
+      2,
+    ),
+  );
+}
+
+export function outputTimeEntriesPretty(entries: TimeEntry[], date: string): void {
+  if (entries.length === 0) {
+    console.log(chalk.gray(`No time entries on ${date}.`));
+    return;
+  }
+  console.log(chalk.bold(`\nTime on ${date}\n`));
+  let total = 0;
+  for (const e of entries) {
+    const mins = entryMinutes(e);
+    total += mins;
+    const range = `${clock(e.startedAt)}–${e.endedAt ? clock(e.endedAt) : 'now'}`;
+    console.log(
+      `  ${range}  ${chalk.bold(formatMinutes(mins).padStart(6))}  ${statusBadge(e.status)} ${e.action?.name ?? e.actionId}${e.note ? chalk.gray(` · ${e.note}`) : ''}`,
+    );
+    console.log(chalk.gray(`    ${e.id}  ${e.source}${e.sourceRef ? `  ${e.sourceRef}` : ''}`));
+  }
+  const proposed = entries.filter((e) => e.status === 'PROPOSED').length;
+  console.log(
+    chalk.bold(`\n${formatMinutes(total)} across ${entries.length} entries`) +
+      (proposed > 0 ? chalk.yellow(`, ${proposed} proposed`) : ''),
+  );
+}
+
+export function outputTimeBatchJson(results: TimeLogBatchResult[]): void {
+  console.log(
+    JSON.stringify(
+      {
+        results: results.map((r) => ({
+          index: r.index,
+          success: r.success,
+          outcome: r.outcome ?? null,
+          sourceRef: r.sourceRef ?? r.entry?.sourceRef ?? null,
+          entry: r.entry ? transformTimeEntry(r.entry) : null,
+          error: r.error ?? null,
+        })),
+        total: results.length,
+        succeeded: results.filter((r) => r.success).length,
+        failed: results.filter((r) => !r.success).length,
+      },
+      null,
+      2,
+    ),
+  );
+}
+
+export function outputTimeBatchPretty(results: TimeLogBatchResult[]): void {
+  for (const r of results) {
+    const ref = r.sourceRef ?? r.entry?.sourceRef ?? '';
+    if (r.success && r.entry) {
+      console.log(
+        `  ${chalk.green('✓')} #${r.index}: ${chalk.gray(r.outcome ?? '')} ${clock(r.entry.startedAt)}–${r.entry.endedAt ? clock(r.entry.endedAt) : 'now'} ${r.entry.action?.name ?? r.entry.actionId}${ref ? chalk.gray(` ${ref}`) : ''}`,
+      );
+    } else {
+      console.log(`  ${chalk.red('✗')} #${r.index}: ${ref} — ${r.error ?? 'failed'}`);
+    }
+  }
+  const ok = results.filter((r) => r.success).length;
+  console.log(chalk.bold(`\n${ok}/${results.length} entries logged`));
 }
