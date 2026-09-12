@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { createTimeCommand, parseBatchFile, batchItemToInput } from './time.js';
+import { createTimeCommand, parseBatchFile, batchItemToInput, parseMessagesFile } from './time.js';
 import { createActionsCommand } from './actions.js';
 import * as clientModule from '../client/index.js';
 import * as resolveModule from '../utils/resolve.js';
@@ -46,14 +46,15 @@ function makeClient() {
     entries.map((e, index) => ({ index, success: true, outcome: 'created', sourceRef: e.sourceRef, entry: makeEntry(e) })),
   );
   const list = vi.fn().mockResolvedValue([makeEntry(), makeEntry({ id: 'e2', status: 'CONFIRMED', source: 'manual', sourceRef: null, note: null })]);
+  const confirmDay = vi.fn().mockResolvedValue({ confirmed: 2 });
   const upsertBySource = vi.fn().mockResolvedValue({
     action: { id: 'a1', name: 'Action modal close latency', status: 'ACTIVE', priority: 'Quick', kanbanStatus: null, project: null },
     outcome: 'created',
   });
-  const client = { time: { log, logBatch, list }, actions: { upsertBySource } };
+  const client = { time: { log, logBatch, list, confirmDay }, actions: { upsertBySource } };
   vi.mocked(clientModule.getClient).mockReturnValue(client as unknown as ReturnType<typeof clientModule.getClient>);
   vi.mocked(resolveModule.resolveWorkspaceId).mockResolvedValue('ws1');
-  return { log, logBatch, list, upsertBySource };
+  return { log, logBatch, list, confirmDay, upsertBySource };
 }
 
 async function run(args: string[], command = createTimeCommand) {
@@ -250,5 +251,75 @@ describe('actions upsert', () => {
     const payload = JSON.parse(loggedText()) as { outcome: string; action: { id: string } };
     expect(payload.outcome).toBe('created');
     expect(payload.action.id).toBe('a1');
+  });
+});
+
+describe('time confirm', () => {
+  it('confirms the day and prints the count', async () => {
+    const { confirmDay } = makeClient();
+    await run(['confirm', '--date', '2026-09-11']);
+    expect(confirmDay).toHaveBeenCalledWith('2026-09-11', undefined);
+    expect(JSON.parse(loggedText())).toEqual({ date: '2026-09-11', confirmed: 2 });
+  });
+
+  it('resolves --workspace and rejects a malformed date first', async () => {
+    const { confirmDay } = makeClient();
+    await run(['confirm', '--date', '2026-09-11', '--workspace', 'syntrofi']);
+    expect(confirmDay).toHaveBeenCalledWith('2026-09-11', 'ws1');
+    await expect(run(['confirm', '--date', 'today'])).rejects.toThrow('process.exit(1)');
+    expect(confirmDay).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('time log — V2 outcomes', () => {
+  it('prints merged and dropped results without an entry', async () => {
+    const { log } = makeClient();
+    log.mockResolvedValueOnce({ entry: null, outcome: 'merged', pieces: [], mergedInto: ['manual-1'] });
+    await run(['log', '--action', 'a1', '--from', '2026-09-11T14:57', '--to', '2026-09-11T15:22', '--ref', 'r']);
+    expect(JSON.parse(loggedText())).toEqual({ outcome: 'merged', entry: null, pieces: [], mergedInto: ['manual-1'] });
+  });
+});
+
+describe('time segment', () => {
+  it('parses messages and rejects bad rows', () => {
+    expect(parseMessagesFile('[{"at":"2026-09-11T09:00:00","role":"user"}]')).toHaveLength(1);
+    expect(parseMessagesFile('{"messages":[{"at":"2026-09-11T09:00:00","role":"assistant"}]}')).toHaveLength(1);
+    expect(() => parseMessagesFile('[{"at":"nope","role":"user"}]')).toThrow('not a valid timestamp');
+    expect(() => parseMessagesFile('[{"at":"2026-09-11T09:00:00","role":"system"}]')).toThrow('role must be');
+    expect(() => parseMessagesFile('{"x":1}')).toThrow('JSON array of {at, role}');
+  });
+
+  it('emits the batch time log --from-file consumes: claude-desktop for human segments, agent-run for unattended runs', async () => {
+    makeClient();
+    const file = writeTemp('messages.json', JSON.stringify([
+      { at: '2026-09-11T10:00:00', role: 'user' },
+      { at: '2026-09-11T10:05:00', role: 'assistant' },
+      { at: '2026-09-11T10:20:00', role: 'assistant' },
+      { at: '2026-09-11T10:31:00', role: 'assistant' },
+      { at: '2026-09-11T11:00:00', role: 'assistant' },
+      { at: '2026-09-11T12:00:00', role: 'assistant' },
+      { at: '2026-09-11T12:05:00', role: 'user' },
+      { at: '2026-09-11T12:06:00', role: 'assistant' },
+    ]));
+    await run(['segment', '--from-file', file, '--action', 'a1', '--ref-prefix', 'claude-session:s1', '--note', 'PR 660']);
+    const batch = JSON.parse(loggedText()) as Array<{ actionId: string; source: string; sourceRef: string; startedAt: string; endedAt: string; note: string }>;
+    expect(batch.map((b) => [b.source, b.sourceRef])).toEqual([
+      ['claude-desktop', 'claude-session:s1#0'],
+      ['agent-run', 'claude-session:s1#1'],
+      ['claude-desktop', 'claude-session:s1#2'],
+    ]);
+    expect(batch.every((b) => b.actionId === 'a1' && b.note === 'PR 660')).toBe(true);
+    expect(new Date(batch[0]!.startedAt)).toEqual(new Date('2026-09-11T10:00:00'));
+    expect(new Date(batch[0]!.endedAt)).toEqual(new Date('2026-09-11T10:20:00'));
+    expect(new Date(batch[1]!.startedAt)).toEqual(new Date('2026-09-11T10:30:00'));
+    expect(new Date(batch[1]!.endedAt)).toEqual(new Date('2026-09-11T12:00:00'));
+    // The batch round-trips through the log parser with no unknown keys.
+    expect(parseBatchFile(loggedText())).toHaveLength(3);
+  });
+
+  it('rejects a non-positive --gap', async () => {
+    makeClient();
+    const file = writeTemp('messages.json', '[{"at":"2026-09-11T10:00:00","role":"user"}]');
+    await expect(run(['segment', '--from-file', file, '--action', 'a1', '--ref-prefix', 'p', '--gap', '0'])).rejects.toThrow('process.exit(1)');
   });
 });

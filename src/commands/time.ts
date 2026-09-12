@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import type { TimeEntrySource, TimeEntryStatus, TimeLogInput } from 'exponential-sdk';
+import { segmentConversation, type ConversationMessage, type TimeEntrySource, type TimeEntryStatus, type TimeLogInput } from 'exponential-sdk';
 import { getClient } from '../client/index.js';
 import { handleError } from '../utils/errors.js';
 import { readText, parseDate } from '../utils/input.js';
@@ -12,6 +12,8 @@ import {
   outputTimeEntriesPretty,
   outputTimeBatchJson,
   outputTimeBatchPretty,
+  outputTimeConfirmJson,
+  outputTimeConfirmPretty,
 } from '../utils/output.js';
 
 interface GlobalOptions {
@@ -276,5 +278,95 @@ export function createTimeCommand(): Command {
       }
     });
 
+  time
+    .command('confirm')
+    .description(
+      "Confirm a day: every PROPOSED entry of yours that starts that day becomes CONFIRMED and the Actions' spent time moves. Human only — run it with your personal credentials; an agent key is refused.",
+    )
+    .requiredOption('-d, --date <YYYY-MM-DD>', 'The day (local time)')
+    .option('-w, --workspace <slug|id>', 'Only entries in this workspace (default: all)')
+    .action(async (options: { date: string; workspace?: string }, cmd: Command) => {
+      const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+      const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+      try {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(options.date)) {
+          throw new Error(`--date must be YYYY-MM-DD, got "${options.date}".`);
+        }
+        const client = getClient();
+        const workspaceId = options.workspace
+          ? await resolveWorkspaceId(client, options.workspace)
+          : undefined;
+        const result = await client.time.confirmDay(options.date, workspaceId);
+        if (useJson) outputTimeConfirmJson(result, options.date);
+        else outputTimeConfirmPretty(result, options.date);
+      } catch (error) {
+        handleError(error);
+      }
+    });
+
+  time
+    .command('segment')
+    .description(
+      [
+        "Cut one conversation's messages into Worklog segments and print the batch `time log --from-file -` consumes.",
+        'Input: a JSON array of {at, role} (role user|assistant), or {"messages": [...]}.',
+        'A gap over 30 minutes between the person\'s messages ends a segment; bounds round outward to 5 minutes; assistant-only runs longer than the gap become agent-run entries.',
+      ].join(' '),
+    )
+    .requiredOption('--from-file <path>', 'Messages JSON ("-" = stdin)')
+    .requiredOption('-a, --action <id>', 'Action CUID every entry is logged on')
+    .requiredOption('--ref-prefix <prefix>', 'sourceRef prefix, e.g. claude-session:<sessionId>; segments get #0, #1, …')
+    .option('--gap <minutes>', 'Silence between the person\'s messages that ends a segment', '30')
+    .option('--note <text>', 'Note copied onto every entry')
+    .action(
+      async (options: { fromFile: string; action: string; refPrefix: string; gap: string; note?: string }) => {
+        try {
+          const gap = Number.parseInt(options.gap, 10);
+          if (Number.isNaN(gap) || gap <= 0) throw new Error(`--gap must be a positive integer, got "${options.gap}".`);
+          const messages = parseMessagesFile(readText(undefined, options.fromFile)!);
+          const segments = segmentConversation(messages, gap);
+          const entries = segments.map((segment, index) => ({
+            actionId: options.action,
+            startedAt: segment.start.toISOString(),
+            endedAt: segment.end.toISOString(),
+            source: segment.humanTurns === 0 ? 'agent-run' : 'claude-desktop',
+            sourceRef: `${options.refPrefix}#${index}`,
+            ...(options.note ? { note: options.note } : {}),
+          }));
+          console.log(JSON.stringify(entries, null, 2));
+        } catch (error) {
+          handleError(error);
+        }
+      },
+    );
+
   return time;
+}
+
+/** Messages for `time segment`: `{at, role}` rows, or `{"messages": [...]}`. */
+export function parseMessagesFile(raw: string): ConversationMessage[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new Error(
+      `--from-file must be JSON: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  const items = Array.isArray(parsed)
+    ? parsed
+    : typeof parsed === 'object' &&
+        parsed !== null &&
+        Array.isArray((parsed as { messages?: unknown }).messages)
+      ? (parsed as { messages: unknown[] }).messages
+      : null;
+  if (!items) throw new Error('--from-file must contain a JSON array of {at, role} messages, or {"messages": [...]}.');
+  return items.map((item, i) => {
+    if (typeof item !== 'object' || item === null) throw new Error(`Message[${i}] is not an object.`);
+    const { at, role } = item as { at?: unknown; role?: unknown };
+    if (typeof at !== 'string' && !(at instanceof Date)) throw new Error(`Message[${i}].at must be an ISO timestamp.`);
+    if (Number.isNaN(new Date(at).getTime())) throw new Error(`Message[${i}].at is not a valid timestamp: "${String(at)}".`);
+    if (role !== 'user' && role !== 'assistant') throw new Error(`Message[${i}].role must be "user" or "assistant".`);
+    return { at, role };
+  });
 }
