@@ -47,14 +47,27 @@ function makeClient() {
   );
   const list = vi.fn().mockResolvedValue([makeEntry(), makeEntry({ id: 'e2', status: 'CONFIRMED', source: 'manual', sourceRef: null, note: null })]);
   const confirmDay = vi.fn().mockResolvedValue({ confirmed: 2 });
+  const dayReport = vi.fn().mockResolvedValue({
+    dayStart: new Date('2026-09-11T00:00:00'),
+    dayEnd: new Date('2026-09-12T00:00:00'),
+    entries: [{ ...makeEntry(), minutes: 68, productId: 'p1', productName: 'Exponential', isAgentRun: false, flags: [], action: { ...makeEntry().action, ticketId: 't1', project: null, ticket: { id: 't1', number: 7, shortId: 'windy.moose', title: 'V1', productId: 'p1' } } }],
+    attentionMinutes: 90,
+    sessionMinutes: 120,
+    agentRunMinutes: 30,
+    byProduct: [{ productId: 'p1', name: 'Exponential', minutes: 60 }, { productId: null, name: 'Unassigned', minutes: 30 }],
+    byAction: [{ actionId: 'a1', name: 'Action modal close latency', minutes: 60, sessionMinutes: 68, agentRunMinutes: 30, productId: 'p1', productName: 'Exponential', projectId: null, projectName: null, ticket: { id: 't1', number: 7, shortId: 'windy.moose', title: 'V1' }, proposedCount: 1 }],
+    unassignedCount: 1,
+    proposedCount: 1,
+    flags: [],
+  });
   const upsertBySource = vi.fn().mockResolvedValue({
     action: { id: 'a1', name: 'Action modal close latency', status: 'ACTIVE', priority: 'Quick', kanbanStatus: null, project: null },
     outcome: 'created',
   });
-  const client = { time: { log, logBatch, list, confirmDay }, actions: { upsertBySource } };
+  const client = { time: { log, logBatch, list, confirmDay, dayReport }, actions: { upsertBySource } };
   vi.mocked(clientModule.getClient).mockReturnValue(client as unknown as ReturnType<typeof clientModule.getClient>);
   vi.mocked(resolveModule.resolveWorkspaceId).mockResolvedValue('ws1');
-  return { log, logBatch, list, confirmDay, upsertBySource };
+  return { log, logBatch, list, confirmDay, dayReport, upsertBySource };
 }
 
 async function run(args: string[], command = createTimeCommand) {
@@ -321,5 +334,37 @@ describe('time segment', () => {
     makeClient();
     const file = writeTemp('messages.json', '[{"at":"2026-09-11T10:00:00","role":"user"}]');
     await expect(run(['segment', '--from-file', file, '--action', 'a1', '--ref-prefix', 'p', '--gap', '0'])).rejects.toThrow('process.exit(1)');
+  });
+});
+
+describe('time report', () => {
+  it('prints the day report as JSON with the headline numbers, roll-ups and entries', async () => {
+    const { dayReport } = makeClient();
+    await run(['report', '--date', '2026-09-11', '--workspace', 'syntrofi']);
+    expect(dayReport).toHaveBeenCalledWith('2026-09-11', 'ws1');
+    const payload = JSON.parse(loggedText()) as {
+      date: string; attentionMinutes: number; sessionMinutes: number; agentRunMinutes: number;
+      proposedCount: number; byProduct: Array<{ minutes: number }>; entries: Array<{ status: string; ticket: { shortId: string } | null; productName: string }>;
+    };
+    expect(payload).toMatchObject({ date: '2026-09-11', attentionMinutes: 90, sessionMinutes: 120, agentRunMinutes: 30, proposedCount: 1 });
+    expect(payload.byProduct.reduce((s, r) => s + r.minutes, 0)).toBe(90);
+    expect(payload.entries[0]).toMatchObject({ status: 'PROPOSED', productName: 'Exponential', ticket: { shortId: 'windy.moose' } });
+  });
+
+  it('pretty output leads with attention and lists products and actions', async () => {
+    makeClient();
+    Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true });
+    await run(['report', '--date', '2026-09-11']);
+    const text = loggedText();
+    expect(text).toContain('1h 30m attention · 2h session · 30m agent-run');
+    expect(text).toContain('Unassigned');
+    expect(text).toContain('Action modal close latency');
+    expect(text).toContain('windy.moose');
+  });
+
+  it('rejects a malformed --date before calling the API', async () => {
+    const { dayReport } = makeClient();
+    await expect(run(['report', '--date', 'yesterday'])).rejects.toThrow('process.exit(1)');
+    expect(dayReport).not.toHaveBeenCalled();
   });
 });
