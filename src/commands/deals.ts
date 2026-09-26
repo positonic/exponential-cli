@@ -1,6 +1,8 @@
 import { Command } from 'commander';
 import { getClient } from '../client/index.js';
 import { handleError } from '../utils/errors.js';
+import { resolveWorkspaceId } from '../utils/resolve.js';
+import { matchStage, resolvePipeline } from '../utils/pipelines.js';
 import {
   shouldUseJson,
   outputDealJson,
@@ -9,6 +11,8 @@ import {
   outputDealsPretty,
   outputPipelineJson,
   outputPipelinePretty,
+  outputPipelinesJson,
+  outputPipelinesPretty,
   outputStagesJson,
   outputStagesPretty,
 } from '../utils/output.js';
@@ -19,21 +23,49 @@ interface GlobalOptions {
   workspace?: string;
 }
 
+const PIPELINE_FLAG_HELP =
+  'Pipeline id, slug-prefixed id, or name (case-insensitive). Prompts in a terminal when the workspace has several; piped or --json falls back to the default';
+
 export function createDealsCommand(): Command {
   const deals = new Command('deals')
     .description('Manage pipeline deals');
 
   deals
-    .command('pipeline')
-    .description('Get pipeline overview with stages')
-    .requiredOption('--workspace <id>', 'Workspace ID')
-    .action(async (options: { workspace: string }, cmd: Command) => {
+    .command('pipelines')
+    .description("List a workspace's pipelines; the first is the default used when --pipeline is omitted")
+    .option('--workspace <slug|id>', 'Workspace slug or ID (defaults to the configured workspace)')
+    .action(async (options: { workspace?: string }, cmd: Command) => {
       const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
       const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
 
       try {
         const client = getClient();
-        const pipeline = await client.pipelines.get(options.workspace);
+        const workspaceId = await resolveWorkspaceId(client, options.workspace);
+        const pipelines = await client.pipelines.list(workspaceId);
+
+        if (useJson) {
+          outputPipelinesJson(pipelines);
+        } else {
+          outputPipelinesPretty(pipelines);
+        }
+      } catch (error) {
+        handleError(error, useJson);
+      }
+    });
+
+  deals
+    .command('pipeline')
+    .description('Get pipeline overview with stages')
+    .requiredOption('--workspace <id>', 'Workspace ID')
+    .option('--pipeline <id|name>', PIPELINE_FLAG_HELP)
+    .action(async (options: { workspace: string; pipeline?: string }, cmd: Command) => {
+      const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+      const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+
+      try {
+        const client = getClient();
+        const target = await resolvePipeline(client, options.workspace, { ref: options.pipeline, useJson });
+        const pipeline = await client.pipelines.get(options.workspace, target?.id);
 
         if (!pipeline) {
           if (useJson) {
@@ -58,13 +90,15 @@ export function createDealsCommand(): Command {
     .command('stages')
     .description('List pipeline stages')
     .requiredOption('--workspace <id>', 'Workspace ID')
-    .action(async (options: { workspace: string }, cmd: Command) => {
+    .option('--pipeline <id|name>', PIPELINE_FLAG_HELP)
+    .action(async (options: { workspace: string; pipeline?: string }, cmd: Command) => {
       const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
       const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
 
       try {
         const client = getClient();
-        const stages = await client.pipelines.getStages(options.workspace);
+        const target = await resolvePipeline(client, options.workspace, { ref: options.pipeline, useJson });
+        const stages = await client.pipelines.getStages(options.workspace, target?.id);
 
         if (useJson) {
           outputStagesJson(stages);
@@ -78,15 +112,17 @@ export function createDealsCommand(): Command {
 
   deals
     .command('list')
-    .description('List all deals')
+    .description('List all deals on a pipeline')
     .requiredOption('--workspace <id>', 'Workspace ID')
-    .action(async (options: { workspace: string }, cmd: Command) => {
+    .option('--pipeline <id|name>', PIPELINE_FLAG_HELP)
+    .action(async (options: { workspace: string; pipeline?: string }, cmd: Command) => {
       const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
       const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
 
       try {
         const client = getClient();
-        const dealsList = await client.pipelines.listDeals(options.workspace);
+        const target = await resolvePipeline(client, options.workspace, { ref: options.pipeline, useJson });
+        const dealsList = await client.pipelines.listDeals(options.workspace, target?.id);
 
         if (useJson) {
           outputDealsJson(dealsList);
@@ -124,7 +160,8 @@ export function createDealsCommand(): Command {
     .command('create')
     .description('Create a new deal')
     .requiredOption('--workspace <id>', 'Workspace ID')
-    .requiredOption('--stage <id>', 'Pipeline stage ID')
+    .option('--pipeline <id|name>', PIPELINE_FLAG_HELP)
+    .requiredOption('--stage <id|name>', 'Stage ID or name, resolved against the chosen pipeline')
     .requiredOption('--title <title>', 'Deal title')
     .option('--description <text>', 'Deal description')
     .option('--value <amount>', 'Deal value', parseFloat)
@@ -136,6 +173,7 @@ export function createDealsCommand(): Command {
     .option('--assigned-to <id>', 'Assigned user ID')
     .action(async (options: {
       workspace: string;
+      pipeline?: string;
       stage: string;
       title: string;
       description?: string;
@@ -160,9 +198,15 @@ export function createDealsCommand(): Command {
         }
 
         const client = getClient();
+        const target = await resolvePipeline(client, options.workspace, { ref: options.pipeline, useJson });
+        // The server accepts any stage id, even one from a different board;
+        // resolve it here against the pipeline the deal is actually going on.
+        const stages = await client.pipelines.getStages(options.workspace, target?.id);
+        const stage = matchStage(stages, options.stage, target?.name ?? 'default');
         const deal = await client.pipelines.createDeal({
           workspaceId: options.workspace,
-          stageId: options.stage,
+          pipelineId: target?.id,
+          stageId: stage.id,
           title: options.title,
           description: options.description,
           value: options.value,

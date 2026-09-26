@@ -650,6 +650,35 @@ export function outputPipelinePretty(pipeline: Pipeline): void {
   console.log();
 }
 
+export function outputPipelinesJson(pipelines: Pipeline[]): void {
+  console.log(JSON.stringify({
+    pipelines: pipelines.map((p, index) => ({
+      id: p.id,
+      name: p.name,
+      status: p.status,
+      stageCount: p.pipelineStages.length,
+      isDefault: index === 0,
+    })),
+    total: pipelines.length,
+  }, null, 2));
+}
+
+export function outputPipelinesPretty(pipelines: Pipeline[]): void {
+  if (pipelines.length === 0) {
+    console.log(chalk.gray('No pipelines found in this workspace.'));
+    return;
+  }
+  console.log(chalk.bold(`\nPipelines (${pipelines.length})`));
+  console.log(chalk.gray('─'.repeat(50)));
+  pipelines.forEach((p, index) => {
+    const stages = p.pipelineStages.length;
+    const marker = index === 0 ? chalk.cyan(' [default]') : '';
+    console.log(`  ${chalk.bold(p.name)}${marker} — ${chalk.gray(p.status ?? 'no status')}, ${stages} ${stages === 1 ? 'stage' : 'stages'}`);
+    console.log(chalk.gray(`    ID: ${p.id}`));
+  });
+  console.log();
+}
+
 export function outputStagesJson(stages: PipelineStage[]): void {
   console.log(JSON.stringify({
     stages: stages.map(s => ({

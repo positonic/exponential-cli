@@ -312,6 +312,30 @@ exponential projects update --id <cuid> --product none
 exponential projects delete --id <cuid> [--force]
 ```
 
+### Deals and pipelines
+
+A workspace can hold several pipelines (Sales, Hiring, Grants…). Every board
+command takes `--pipeline <id|name>`; the id may be bare or the slug-prefixed
+form the web app puts in project URLs.
+
+```bash
+# Which pipelines does this workspace have? The first is the default.
+exponential deals pipelines --workspace syntrofi
+
+# Board, stages and deals of one pipeline
+exponential deals pipeline --workspace <workspace-id> --pipeline "Close 3 paying clients by Dec 2026"
+exponential deals stages   --workspace <workspace-id> --pipeline close_3-cmtv8ufge0001gu04f9dz1irm
+exponential deals list     --workspace <workspace-id> --pipeline cmtv8ufge0001gu04f9dz1irm
+
+# Create a deal; --stage is an id or name on THAT pipeline
+exponential deals create --workspace <workspace-id> --pipeline Sales --stage "Intro call" --title "Acme"
+```
+
+Without `--pipeline`, a workspace with one pipeline just uses it. With several,
+a terminal session gets a select list; a piped run or `--json` uses the default
+(oldest) pipeline and prints a one-line notice on stderr naming it, so existing
+scripts keep working unchanged.
+
 ### Workspaces
 
 ```bash

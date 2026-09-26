@@ -43,3 +43,41 @@ export function parseDate(value: string | undefined): Date | undefined {
   }
   return date;
 }
+
+export interface SelectChoice<T> {
+  label: string;
+  value: T;
+}
+
+/**
+ * Interactive pick from a numbered list. The menu and the prompt go to stderr
+ * so stdout stays clean for whatever the command then prints. Callers must
+ * only reach for this when stdin and stdout are TTYs — there is no fallback
+ * here; a non-interactive run has to choose a default itself.
+ */
+export async function selectOption<T>(
+  message: string,
+  choices: SelectChoice<T>[],
+): Promise<T> {
+  if (choices.length === 0) {
+    throw new Error(`Nothing to choose from: ${message}`);
+  }
+  const { createInterface } = await import('node:readline/promises');
+  const rl = createInterface({ input: process.stdin, output: process.stderr });
+  try {
+    process.stderr.write(`${message}\n`);
+    choices.forEach((choice, index) => {
+      process.stderr.write(`  ${index + 1}) ${choice.label}\n`);
+    });
+    for (;;) {
+      const answer = (await rl.question(`Choose [1-${choices.length}]: `)).trim();
+      const index = Number.parseInt(answer, 10);
+      if (Number.isInteger(index) && index >= 1 && index <= choices.length) {
+        return choices[index - 1]!.value;
+      }
+      process.stderr.write(`Enter a number between 1 and ${choices.length}.\n`);
+    }
+  } finally {
+    rl.close();
+  }
+}
