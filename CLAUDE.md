@@ -46,6 +46,14 @@ The CLI's JSON output mode and pipeable design make it a natural fit for all of 
 
 See [docs/acfs-integration.md](docs/acfs-integration.md) for full architecture details.
 
+### Action dependencies (agent quick reference)
+
+- `actions show <id>` prints a "Blocked by" block; `actions list`/`kanban` rows show `[BLOCKED]`.
+- `actions update <id> --blocked-by <id,id>` replaces the set; `--clear-blocked-by` empties it;
+  `actions create ... --blocked-by <ids>`; `actions deps search <query> [--workspace <slug>]`
+  finds blocker candidates. Ids are action CUIDs, never titles.
+- JSON output passes `depsOut`, `openBlockerCount` and `isBlocked` through from the server.
+
 ### Key considerations for CLI development
 - Stable JSON output format is critical — agents and tools parse CLI output
 - Issue lifecycle hooks and webhook support are future goals

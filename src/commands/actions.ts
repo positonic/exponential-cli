@@ -1,6 +1,7 @@
 import { Command } from 'commander';
 import { getClient } from '../client/index.js';
-import { handleError } from '../utils/errors.js';
+import { handleError, ExponentialError } from '../utils/errors.js';
+import { isTRPCError } from '../client/index.js';
 import { resolveWorkspaceId } from '../utils/resolve.js';
 import {
   shouldUseJson,
@@ -9,6 +10,8 @@ import {
   outputActionJson,
   outputActionPretty,
   outputActionUpsertJson,
+  outputBlockerCandidatesJson,
+  outputBlockerCandidatesPretty,
   outputCommentJson,
   outputCommentPretty,
   outputCommentsJson,
@@ -19,6 +22,40 @@ import {
   outputOverdueTriagePretty,
 } from '../utils/output.js';
 import type { Action, KanbanStatus, Priority } from 'exponential-sdk';
+
+/**
+ * A rejected blocker set. The server refuses a self-link or a cycle with
+ * BAD_REQUEST (message shown verbatim) and an id that is not a readable action
+ * in the same workspace with NOT_FOUND; the latter gets a hint, since the
+ * generic "Resource not found" would suggest the action itself was missing.
+ */
+function rethrowBlockerError(error: unknown): never {
+  if (isTRPCError(error) && error.data?.code === 'NOT_FOUND') {
+    throw new ExponentialError(
+      error.message,
+      'NOT_FOUND',
+      '--blocked-by takes action CUIDs (not titles) that you can read in the same workspace. Find them with `exponential actions deps search <query>`.',
+    );
+  }
+  throw error;
+}
+
+/**
+ * Parse `--blocked-by` / `--clear-blocked-by` into the `blockedByIds` field:
+ * `undefined` leaves the set alone, `[]` clears it, otherwise it replaces it.
+ */
+export function parseBlockedBy(raw: string | undefined, clear: boolean | undefined): string[] | undefined {
+  if (clear && raw !== undefined) {
+    throw new Error('Pass either --blocked-by <ids> or --clear-blocked-by, not both.');
+  }
+  if (clear) return [];
+  if (raw === undefined) return undefined;
+  const ids = raw.split(',').map((s) => s.trim()).filter(Boolean);
+  if (ids.length === 0) {
+    throw new Error('No blocker IDs supplied. Pass --blocked-by id1,id2 (action CUIDs) or --clear-blocked-by.');
+  }
+  return ids;
+}
 
 interface GlobalOptions {
   json?: boolean;
@@ -91,6 +128,40 @@ export function createActionsCommand(): Command {
         } else {
           outputActionsPretty(actions);
         }
+      } catch (error) {
+        handleError(error, useJson);
+      }
+    });
+
+  actions
+    .command('show <id>')
+    .description('Show one action with its blockers ("Blocked by": name, short id, status)')
+    .action(async (id: string, _options: Record<string, never>, cmd: Command) => {
+      const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+      const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+
+      try {
+        const client = getClient();
+        const action = await client.actions.get(id);
+        if (useJson) outputActionJson(action);
+        else outputActionPretty(action);
+      } catch (error) {
+        handleError(error, useJson);
+      }
+    });
+
+  actions
+    .command('get <id>')
+    .description('Alias for `actions show`')
+    .action(async (id: string, _options: Record<string, never>, cmd: Command) => {
+      const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+      const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+
+      try {
+        const client = getClient();
+        const action = await client.actions.get(id);
+        if (useJson) outputActionJson(action);
+        else outputActionPretty(action);
       } catch (error) {
         handleError(error, useJson);
       }
@@ -268,9 +339,9 @@ export function createActionsCommand(): Command {
     });
 
   actions
-    .command('update')
-    .description('Update an existing action')
-    .requiredOption('--id <id>', 'Action ID to update')
+    .command('update [id]')
+    .description('Update an existing action (`actions update <id> ...`; `--id <id>` is still accepted)')
+    .option('--id <id>', 'Action ID to update (alternative to the positional <id>)')
     .option('-n, --name <name>', 'New action name')
     .option('-d, --description <text>', 'New description')
     .option('-p, --project <id>', 'Move to project ID')
@@ -280,8 +351,13 @@ export function createActionsCommand(): Command {
     .option('--due <date>', 'Due date (YYYY-MM-DD or "null" to clear)')
     .option('--scheduled-start <datetime>', 'Do-date: when you plan to work on it (YYYY-MM-DD, ISO datetime, or "null" to clear). This is what /today partitions on.')
     .option('--scheduled-end <datetime>', 'End of the time block (YYYY-MM-DD, ISO datetime, or "null" to clear)')
-    .action(async (options: {
-      id: string;
+    .option(
+      '--blocked-by <ids>',
+      'Comma-separated action CUIDs (not titles) this action is blocked by. REPLACES the current set. Refused for a self-link, a cycle, or an id outside the workspace.',
+    )
+    .option('--clear-blocked-by', 'Remove every blocker (sends an empty set)')
+    .action(async (positionalId: string | undefined, options: {
+      id?: string;
       name?: string;
       description?: string;
       project?: string;
@@ -291,11 +367,22 @@ export function createActionsCommand(): Command {
       due?: string;
       scheduledStart?: string;
       scheduledEnd?: string;
+      blockedBy?: string;
+      clearBlockedBy?: boolean;
     }, cmd: Command) => {
       const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
       const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
 
       try {
+        const id = positionalId ?? options.id;
+        if (!id) {
+          throw new Error('Action ID required: exponential actions update <id> ... (or --id <id>)');
+        }
+        if (positionalId && options.id && positionalId !== options.id) {
+          throw new Error(`Conflicting action IDs: "${positionalId}" and --id "${options.id}".`);
+        }
+        const blockedByIds = parseBlockedBy(options.blockedBy, options.clearBlockedBy);
+
         // Validate priority if provided
         if (options.priority && !VALID_PRIORITIES.includes(options.priority as Priority)) {
           throw new Error(`Invalid priority "${options.priority}". Valid values: ${VALID_PRIORITIES.join(', ')}`);
@@ -316,18 +403,31 @@ export function createActionsCommand(): Command {
         const scheduledEnd = parseNullableDate(options.scheduledEnd, 'scheduled-end');
 
         const client = getClient();
-        const action = await client.actions.update({
-          id: options.id,
-          name: options.name,
-          description: options.description,
-          projectId: options.project,
-          priority: options.priority as Priority | undefined,
-          status: options.status as 'ACTIVE' | 'COMPLETED' | 'CANCELLED' | undefined,
-          kanbanStatus: options.kanban as 'BACKLOG' | 'TODO' | 'IN_PROGRESS' | 'IN_REVIEW' | 'DONE' | 'CANCELLED' | undefined,
-          dueDate,
-          scheduledStart,
-          scheduledEnd,
-        });
+        let action: Action;
+        try {
+          action = await client.actions.update({
+            id,
+            name: options.name,
+            description: options.description,
+            projectId: options.project,
+            priority: options.priority as Priority | undefined,
+            status: options.status as 'ACTIVE' | 'COMPLETED' | 'CANCELLED' | undefined,
+            kanbanStatus: options.kanban as 'BACKLOG' | 'TODO' | 'IN_PROGRESS' | 'IN_REVIEW' | 'DONE' | 'CANCELLED' | undefined,
+            dueDate,
+            scheduledStart,
+            scheduledEnd,
+            blockedByIds,
+          });
+        } catch (error) {
+          if (blockedByIds !== undefined) rethrowBlockerError(error);
+          throw error;
+        }
+
+        // `action.update` returns the row without its dependency relation;
+        // when the blocker set changed, re-read so the output shows the new set.
+        if (blockedByIds !== undefined) {
+          action = await client.actions.get(id);
+        }
 
         if (useJson) {
           outputActionJson(action);
@@ -351,6 +451,10 @@ export function createActionsCommand(): Command {
     .option('--effort <minutes>', 'Effort estimate in minutes', parseInt)
     .option('--ticket <id>', 'Link action to a product ticket (CUID) after creation')
     .option('--epic <id>', 'Epic CUID to attach the action to')
+    .option(
+      '--blocked-by <ids>',
+      'Comma-separated action CUIDs (not titles) the new action is blocked by. Refused for a cycle or an id outside the workspace.',
+    )
     .action(async (options: {
       name: string;
       description?: string;
@@ -360,6 +464,7 @@ export function createActionsCommand(): Command {
       effort?: number;
       ticket?: string;
       epic?: string;
+      blockedBy?: string;
     }, cmd: Command) => {
       const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
       const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
@@ -379,16 +484,25 @@ export function createActionsCommand(): Command {
           }
         }
 
+        const blockedByIds = parseBlockedBy(options.blockedBy, undefined);
+
         const client = getClient();
-        let action = await client.actions.create({
-          name: options.name,
-          description: options.description,
-          projectId: options.project,
-          priority: options.priority as Priority | undefined,
-          dueDate,
-          effortEstimate: options.effort,
-          epicId: options.epic,
-        });
+        let action: Action;
+        try {
+          action = await client.actions.create({
+            name: options.name,
+            description: options.description,
+            projectId: options.project,
+            priority: options.priority as Priority | undefined,
+            dueDate,
+            effortEstimate: options.effort,
+            epicId: options.epic,
+            blockedByIds,
+          });
+        } catch (error) {
+          if (blockedByIds !== undefined) rethrowBlockerError(error);
+          throw error;
+        }
 
         // The server's action.create router doesn't accept ticketId, so when
         // --ticket is requested we link via the product.ticket.linkAction RPC
@@ -459,6 +573,39 @@ export function createActionsCommand(): Command {
         }
       },
     );
+
+  const deps = new Command('deps')
+    .description('Action dependencies ("blocked by"). Set them with `actions update <id> --blocked-by <ids>`.');
+
+  deps
+    .command('search <query>')
+    .description('Find open actions to use as blockers; prints CUIDs for --blocked-by')
+    .option('-w, --workspace <slug|id>', 'Scope to a workspace you belong to (default: only your own actions)')
+    .option('--exclude <id>', 'Leave this action out (usually the one being edited)')
+    .option('--limit <n>', 'Max results (server default 10)', parseInt)
+    .action(async (query: string, options: { workspace?: string; exclude?: string; limit?: number }, cmd: Command) => {
+      const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+      const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+
+      try {
+        const client = getClient();
+        const workspaceId = options.workspace
+          ? await resolveWorkspaceId(client, options.workspace)
+          : undefined;
+        const candidates = await client.actions.searchForDependencies({
+          query,
+          workspaceId,
+          excludeId: options.exclude,
+          limit: options.limit,
+        });
+        if (useJson) outputBlockerCandidatesJson(candidates, { query, workspaceId });
+        else outputBlockerCandidatesPretty(candidates);
+      } catch (error) {
+        handleError(error, useJson);
+      }
+    });
+
+  actions.addCommand(deps);
 
   const comment = new Command('comment')
     .description('Manage comments on an action');

@@ -1,6 +1,7 @@
 import chalk from 'chalk';
 import type {
   Action,
+  ActionBlocker,
   ActionComment,
   ActionOutput,
   ActionsListOutput,
@@ -49,6 +50,7 @@ import type {
   WorkspaceOutput,
   WorkspacesListOutput,
 } from 'exponential-sdk';
+import { getBlockers, openBlockers } from 'exponential-sdk';
 
 // Detect if output is being piped
 export function shouldUseJson(forceJson?: boolean, forcePretty?: boolean): boolean {
@@ -87,7 +89,64 @@ export function transformAction(action: Action): ActionOutput {
     })) ?? [],
     createdAt: action.createdAt?.toISOString() ?? new Date().toISOString(),
     completedAt: action.completedAt?.toISOString() ?? null,
+    // Dependency state (ADR-0062) passes through unchanged; procedures that
+    // omit the relation (e.g. kanban) leave the keys out rather than lying.
+    ...(action.depsOut !== undefined ? { depsOut: action.depsOut } : {}),
+    ...(action.openBlockerCount !== undefined ? { openBlockerCount: action.openBlockerCount } : {}),
+    ...(action.isBlocked !== undefined ? { isBlocked: action.isBlocked } : {}),
   };
+}
+
+/**
+ * The inline marker for a blocked action on a list row: `[BLOCKED]`, with the
+ * open-blocker count when there is more than one. Empty when not blocked.
+ */
+export function blockedMarker(action: Pick<Action, 'isBlocked' | 'openBlockerCount'>): string {
+  if (!action.isBlocked) return '';
+  const count = action.openBlockerCount ?? 0;
+  return chalk.red(count > 1 ? `[BLOCKED ×${count}]` : '[BLOCKED]');
+}
+
+/** One line per blocker for the "Blocked by" block; finished blockers are dimmed and struck through. */
+export function formatBlockerLine(blocker: ActionBlocker): string {
+  const shortId = blocker.id.slice(-8);
+  const line = `${blocker.name} (${shortId}) ${blocker.status}`;
+  return blocker.status === 'ACTIVE' ? line : chalk.gray.strikethrough(line);
+}
+
+/** `actions deps search`: candidates for --blocked-by, with the filters echoed. */
+export function outputBlockerCandidatesJson(
+  candidates: ActionBlocker[],
+  filters: { query: string; workspaceId?: string },
+): void {
+  console.log(JSON.stringify({ actions: candidates, total: candidates.length, filters }, null, 2));
+}
+
+export function outputBlockerCandidatesPretty(candidates: ActionBlocker[]): void {
+  if (candidates.length === 0) {
+    console.log(chalk.gray('No open actions match.'));
+    return;
+  }
+  console.log(chalk.bold(`\nBlocker candidates (${candidates.length})`));
+  console.log(chalk.gray('─'.repeat(50)));
+  for (const c of candidates) {
+    const column = c.kanbanStatus ? chalk.gray(`[${c.kanbanStatus}]`) : chalk.gray('[NO STATUS]');
+    console.log(`${column} ${chalk.bold(c.name)}`);
+    console.log(chalk.gray(`  ID: ${c.id}`));
+  }
+  console.log(chalk.gray('\nUse: exponential actions update <id> --blocked-by <id,id>'));
+}
+
+/** The "Blocked by" block on `actions show`; silent when the relation was not included. */
+export function printBlockedBy(action: Action): void {
+  const blockers = getBlockers(action);
+  if (blockers.length === 0) return;
+  const open = openBlockers(action).length;
+  const label = action.isBlocked ? chalk.red('Blocked by:') : chalk.gray('Blocked by:');
+  console.log(`  ${label} ${chalk.gray(`(${open} open of ${blockers.length})`)}`);
+  for (const blocker of blockers) {
+    console.log(`    - ${formatBlockerLine(blocker)}`);
+  }
 }
 
 // Transform Project to ProjectOutput
@@ -134,8 +193,10 @@ export function outputActionPretty(action: Action): void {
     ? chalk[statusColor](`[${action.kanbanStatus}]`)
     : chalk.gray('[NO STATUS]');
 
+  const blocked = blockedMarker(action);
+
   console.log(chalk.gray('─'.repeat(50)));
-  console.log(`\n${statusBadge} ${chalk.bold(action.name)}`);
+  console.log(`\n${statusBadge}${blocked ? ` ${blocked}` : ''} ${chalk.bold(action.name)}`);
   console.log(chalk.gray(`  ID: ${action.id}`));
 
   if (action.project) {
@@ -152,6 +213,7 @@ export function outputActionPretty(action: Action): void {
   if (action.description) {
     console.log(`  ${chalk.gray('Description:')} ${action.description.substring(0, 100)}${action.description.length > 100 ? '...' : ''}`);
   }
+  printBlockedBy(action);
   console.log();
 }
 
@@ -181,7 +243,8 @@ export function outputActionsPretty(actions: Action[]): void {
       ? chalk[statusColor](`[${action.kanbanStatus}]`)
       : chalk.gray('[NO STATUS]');
 
-    console.log(`\n${statusBadge} ${chalk.bold(action.name)}`);
+    const blocked = blockedMarker(action);
+    console.log(`\n${statusBadge}${blocked ? ` ${blocked}` : ''} ${chalk.bold(action.name)}`);
     console.log(chalk.gray(`  ID: ${action.id}`));
 
     if (action.project) {

@@ -86,7 +86,42 @@ exponential actions range --start 2024-01-01 --end 2024-01-31
 
 # Get kanban board view
 exponential actions kanban --project <project-id>
+
+# Show one action, including what it is blocked by
+exponential actions show <action-id>
 ```
+
+#### Dependencies ("blocked by")
+
+An action can be **blocked by** other actions. A blocker is *open* while its
+status is `ACTIVE`; an action is *blocked* while it is `ACTIVE` with at least one
+open blocker. Blocked state is computed by the server and rendered as a red
+`[BLOCKED]` marker on `list`/`kanban` rows (`[BLOCKED ×N]` when more than one
+blocker is open) and as a "Blocked by" block on `show` listing each blocker's
+name, short id and status, with finished blockers struck through.
+
+Ids are action **CUIDs, not titles**. Find candidates with `deps search`.
+
+```bash
+# Find open actions to use as blockers (prints CUIDs)
+exponential actions deps search "write spec" --workspace <slug>
+
+# Replace the blocker set (the list REPLACES whatever was there)
+exponential actions update <action-id> --blocked-by <id>,<id>
+
+# Remove every blocker
+exponential actions update <action-id> --clear-blocked-by
+
+# Create an action that is blocked from the start
+exponential actions create -n "Deploy" -p <project-id> --blocked-by <id>
+```
+
+The server refuses a self-link or a cycle with `BAD_REQUEST` (e.g. "This would
+create a dependency cycle.") and an id that is not a readable action in the same
+workspace with `NOT_FOUND`. In JSON output every action carries `depsOut`
+(`[{ id, dependsOn: { id, name, status, kanbanStatus, projectId } }]`),
+`openBlockerCount` and `isBlocked` exactly as the API returns them. The reverse
+direction (what an action blocks) is not exposed by the API.
 
 #### Triaging an overdue pile
 
