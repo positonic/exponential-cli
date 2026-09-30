@@ -4,6 +4,15 @@ import type {
   ActionComment,
   ActionOutput,
   ActionsListOutput,
+  Ceremony,
+  CeremonyAgenda,
+  CeremonyMyUpdate,
+  CeremonyOccurrence,
+  CeremonyOccurrenceListRow,
+  CeremonySummary,
+  CeremonyTemplate,
+  CeremonyUpdateSummary,
+  CeremonyWriteResult,
   Contact,
   ContactInteraction,
   Deal,
@@ -2580,4 +2589,275 @@ export function outputDayReportPretty(report: DayReport, date: string): void {
   if (report.flags.length > 0) {
     console.log(chalk.yellow(`\n${report.flags.length} manual entr${report.flags.length === 1 ? 'y looks' : 'ies look'} like a forgotten timer`));
   }
+}
+
+// ── Ceremonies (ADR-0059) ───────────────────────────────────────────────────
+
+function getOccurrenceStatusColor(status: string): 'gray' | 'blue' | 'yellow' | 'green' | 'red' {
+  switch (status) {
+    case 'AGENDA_CIRCULATED':
+    case 'IN_PROGRESS':
+      return 'blue';
+    case 'CAPTURED':
+    case 'FOLLOWED_THROUGH':
+      return 'green';
+    case 'SKIPPED':
+      return 'yellow';
+    default:
+      return 'gray';
+  }
+}
+
+/** A timestamp in the ceremony's own zone, which is how the web app shows it. */
+function formatInZone(value: Date | string, timezone?: string): string {
+  const date = new Date(value);
+  try {
+    return date.toLocaleString(undefined, {
+      timeZone: timezone,
+      weekday: 'short',
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      timeZoneName: 'short',
+    });
+  } catch {
+    return date.toLocaleString();
+  }
+}
+
+export function outputCeremoniesJson(
+  ceremonies: CeremonySummary[],
+  extra: Record<string, unknown> = {},
+): void {
+  console.log(JSON.stringify({ ceremonies, total: ceremonies.length, ...extra }, null, 2));
+}
+
+export function outputCeremoniesPretty(ceremonies: CeremonySummary[]): void {
+  if (ceremonies.length === 0) {
+    console.log(chalk.gray('No ceremonies found.'));
+    return;
+  }
+  console.log(chalk.bold(`\nCeremonies (${ceremonies.length})`));
+  console.log(chalk.gray('─'.repeat(50)));
+  for (const c of ceremonies) {
+    const inactive = c.isActive ? '' : chalk.red(' [inactive]');
+    console.log(`  ${chalk.bold(c.name)} ${chalk.gray(`(${c.slug})`)} ${chalk.cyan(`[${c.kind}]`)}${inactive}`);
+    console.log(chalk.gray(`    ID: ${c.id}`));
+    console.log(
+      chalk.gray(
+        `    ${c.cadenceRule} · ${c.timezone} · ${c.durationMinutes} min · owner ${c.owner?.name ?? c.ownerId} · ${c._count.participants} participants · ${c._count.occurrences} occurrences`,
+      ),
+    );
+  }
+  console.log();
+}
+
+export function outputCeremonyJson(ceremony: Ceremony): void {
+  console.log(JSON.stringify(ceremony, null, 2));
+}
+
+export function outputCeremonyPretty(c: Ceremony): void {
+  console.log(chalk.gray('─'.repeat(50)));
+  const inactive = c.isActive ? '' : chalk.red(' [inactive]');
+  console.log(`\n${chalk.bold(c.name)} ${chalk.cyan(`[${c.kind}]`)}${inactive}`);
+  console.log(chalk.gray(`  ID: ${c.id} · slug: ${c.slug}`));
+  console.log(`  ${chalk.gray('Cadence:')} ${c.cadenceRule} (${c.timezone}), ${c.durationMinutes} min, agenda ${c.leadTimeHours}h ahead`);
+  console.log(`  ${chalk.gray('Owner:')} ${c.owner?.name ?? c.owner?.email ?? c.ownerId}`);
+  if (c.participants.length > 0) {
+    console.log(`  ${chalk.gray('Participants:')} ${c.participants.map((p) => p.user.name ?? p.user.email ?? p.userId).join(', ')}`);
+  }
+  if (c.product) console.log(`  ${chalk.gray('Product:')} ${c.product.name}`);
+  if (c.team) console.log(`  ${chalk.gray('Team:')} ${c.team.name}`);
+  if (c.projects.length > 0) {
+    console.log(`  ${chalk.gray('Projects:')} ${c.projects.map((p) => p.project.name).join(', ')}`);
+  }
+  if (c.aliases.length > 0) console.log(`  ${chalk.gray('Aliases:')} ${c.aliases.join(', ')}`);
+  for (const [label, body] of [
+    ['Purpose', c.purpose],
+    ['Not for', c.notFor],
+    ['Inputs', c.inputs],
+    ['Outputs', c.outputs],
+  ] as const) {
+    if (body) console.log(`\n${chalk.bold(label)}\n${body}`);
+  }
+  if (c.agendaTemplate.length > 0) {
+    console.log(`\n${chalk.bold('Agenda template')}`);
+    for (const s of c.agendaTemplate) {
+      console.log(`  - ${s.title} ${chalk.gray(`(${s.type}${s.minutes ? `, ${s.minutes} min` : ''})`)}`);
+    }
+  }
+  if (c.occurrences.length > 0) {
+    console.log(`\n${chalk.bold('Occurrences')} ${chalk.gray('(newest first)')}`);
+    for (const o of c.occurrences) {
+      const color = getOccurrenceStatusColor(o.status);
+      const recs = o.recordedMeetings.length > 0 ? chalk.gray(` · ${o.recordedMeetings.length} recording${o.recordedMeetings.length === 1 ? '' : 's'}`) : '';
+      console.log(`  ${formatInZone(o.scheduledStart, c.timezone)} ${chalk[color](`[${o.status}]`)}${recs}`);
+      console.log(chalk.gray(`    ID: ${o.id}${o.skipReason ? ` · skipped: ${o.skipReason}` : ''}`));
+    }
+  }
+  console.log();
+}
+
+export function outputCeremonyTemplatesPretty(templates: CeremonyTemplate[]): void {
+  console.log(chalk.bold(`\nCeremony templates (${templates.length})`));
+  console.log(chalk.gray('─'.repeat(50)));
+  for (const t of templates) {
+    console.log(`  ${chalk.bold(t.name)} ${chalk.gray(`(${t.slug})`)} ${chalk.cyan(`[${t.kind}]`)}`);
+    console.log(chalk.gray(`    ${t.cadenceRule} · ${t.durationMinutes} min · ${t.agendaTemplate.length} agenda sections`));
+    if (t.purpose) console.log(chalk.gray(`    ${t.purpose}`));
+  }
+  console.log();
+}
+
+export function outputCeremonyWritePretty(result: CeremonyWriteResult, verb: 'created' | 'updated'): void {
+  const c = result.ceremony;
+  console.log(`✓ Ceremony ${verb}: ${chalk.bold(c.name)} ${chalk.gray(`(${c.slug})`)}`);
+  console.log(chalk.gray(`  ID: ${c.id}`));
+  if (result.occurrencesCreated > 0) {
+    console.log(chalk.gray(`  ${result.occurrencesCreated} occurrence${result.occurrencesCreated === 1 ? '' : 's'} scheduled`));
+  }
+}
+
+export function outputOccurrencesJson(
+  occurrences: CeremonyOccurrenceListRow[],
+  extra: Record<string, unknown> = {},
+): void {
+  console.log(JSON.stringify({ occurrences, total: occurrences.length, ...extra }, null, 2));
+}
+
+export function outputOccurrencesPretty(occurrences: CeremonyOccurrenceListRow[]): void {
+  if (occurrences.length === 0) {
+    console.log(chalk.gray('No occurrences in this window.'));
+    return;
+  }
+  console.log(chalk.bold(`\nOccurrences (${occurrences.length})`));
+  console.log(chalk.gray('─'.repeat(50)));
+  for (const o of occurrences) {
+    const color = getOccurrenceStatusColor(o.status);
+    console.log(`  ${formatInZone(o.scheduledStart)} ${chalk.bold(o.ceremony.name)} ${chalk[color](`[${o.status}]`)}`);
+    console.log(chalk.gray(`    ID: ${o.id} · ceremony ${o.ceremonyId}`));
+  }
+  console.log();
+}
+
+export interface OccurrenceExtras {
+  notes?: KnowledgePage | null;
+  decisions?: DecisionListRow[];
+  updates?: CeremonyUpdateSummary;
+}
+
+export function outputOccurrenceJson(occurrence: CeremonyOccurrence, extras: OccurrenceExtras = {}): void {
+  console.log(JSON.stringify({ ...occurrence, ...extras }, null, 2));
+}
+
+export function outputAgendaPretty(agenda: CeremonyAgenda | null): void {
+  if (!agenda) {
+    console.log(chalk.gray('\nNo agenda generated yet.'));
+    return;
+  }
+  console.log(`\n${chalk.bold('Agenda')} ${chalk.gray(`(generated ${new Date(agenda.generatedAt).toLocaleString()})`)}`);
+  for (const section of agenda.sections) {
+    const minutes = section.minutes ? chalk.gray(` · ${section.minutes} min`) : '';
+    console.log(`\n  ${chalk.bold(section.title)}${minutes} ${chalk.gray(`[${section.key}]`)}`);
+    if (section.items.length === 0) {
+      console.log(chalk.gray(`    ${section.emptyReason ?? 'Nothing here.'}`));
+    }
+    for (const item of section.items) {
+      const box = item.resolvedAt ? chalk.green('[x]') : '[ ]';
+      const carried = item.carryCount ? chalk.yellow(` ↻${item.carryCount}`) : '';
+      console.log(`    ${box} ${item.title}${carried}`);
+      const meta = [item.detail, `${item.refType} · id ${item.id}`].filter(Boolean).join(' · ');
+      console.log(chalk.gray(`        ${meta}`));
+    }
+  }
+  if (agenda.narrative) {
+    console.log(`\n${chalk.bold('Summary')}\n${agenda.narrative}`);
+  }
+}
+
+export function outputOccurrenceUpdatesPretty(summary: CeremonyUpdateSummary): void {
+  if (summary.questions.length === 0) {
+    console.log(chalk.gray('This ceremony kind has no async updates.'));
+    return;
+  }
+  console.log(
+    chalk.bold(`\nAsync updates: ${summary.submittedCount} of ${summary.participants.length} submitted`) +
+      (summary.blockedCount > 0 ? chalk.red(` · ${summary.blockedCount} blocked`) : ''),
+  );
+  for (const p of summary.participants) {
+    const state = p.submittedAt ? chalk.green('submitted') : chalk.gray('not yet');
+    const blocked = p.flaggedBlocker ? chalk.red(' [blocked]') : '';
+    console.log(`\n  ${chalk.bold(p.name ?? p.email ?? p.userId)} ${state}${blocked}`);
+    for (const q of summary.questions) {
+      const answer = p.answers[q.key];
+      if (answer) console.log(`    ${chalk.gray(q.prompt)}\n    ${answer.replace(/\n/g, '\n    ')}`);
+    }
+  }
+  console.log();
+}
+
+export function outputMyOccurrenceUpdatePretty(update: CeremonyMyUpdate): void {
+  if (update.questions.length === 0) {
+    console.log(chalk.gray('This ceremony kind has no async updates.'));
+    return;
+  }
+  const state = update.submittedAt
+    ? chalk.green(`submitted ${new Date(update.submittedAt).toLocaleString()}`)
+    : chalk.gray('not submitted');
+  console.log(`\n${chalk.bold('Your update')} ${state}${update.flaggedBlocker ? chalk.red(' [blocked]') : ''}`);
+  if (update.isParticipant === false) {
+    console.log(chalk.yellow("  You aren't a participant of this ceremony."));
+  }
+  for (const q of update.questions) {
+    const answer = update.answers[q.key];
+    const draft = update.draftAnswers[q.key];
+    console.log(`\n  ${chalk.bold(q.prompt)} ${chalk.gray(`[${q.key}]`)}`);
+    if (answer) console.log(`    ${answer.replace(/\n/g, '\n    ')}`);
+    else if (draft) console.log(chalk.gray(`    (draft) ${draft.replace(/\n/g, '\n    ')}`));
+    else console.log(chalk.gray('    —'));
+  }
+  console.log();
+}
+
+export function outputOccurrencePretty(o: CeremonyOccurrence, extras: OccurrenceExtras = {}): void {
+  const tz = o.ceremony.timezone;
+  const color = getOccurrenceStatusColor(o.status);
+  console.log(chalk.gray('─'.repeat(50)));
+  console.log(`\n${chalk.bold(o.ceremony.name)} — ${formatInZone(o.scheduledStart, tz)} ${chalk[color](`[${o.status}]`)}`);
+  console.log(chalk.gray(`  ID: ${o.id} · ceremony ${o.ceremonyId}`));
+  console.log(`  ${chalk.gray('Owner:')} ${o.ceremony.owner?.name ?? o.ceremony.owner?.email ?? o.ceremony.ownerId}`);
+  if (o.skipReason) console.log(`  ${chalk.gray('Skipped:')} ${o.skipReason}`);
+  if (o.agendaCirculatedAt) {
+    console.log(`  ${chalk.gray('Agenda circulated:')} ${formatInZone(o.agendaCirculatedAt, tz)}`);
+  }
+  if (o.skipProposal?.proposed) {
+    console.log(chalk.yellow('  The agenda is empty — this occurrence is a candidate to skip.'));
+  }
+  if (o.recordedMeetings.length > 0) {
+    console.log(`  ${chalk.gray('Recordings:')}`);
+    for (const m of o.recordedMeetings) {
+      console.log(m.visible ? `    ${m.title ?? '(untitled)'} ${chalk.gray(m.id)}` : chalk.gray(`    (a recording you cannot view) ${m.id}`));
+    }
+  }
+  if (o.notesPageId && extras.notes === undefined) {
+    console.log(`  ${chalk.gray('Notes page:')} ${o.notesPageId} ${chalk.gray('(--notes to include)')}`);
+  }
+
+  outputAgendaPretty(o.agenda);
+
+  if (extras.notes !== undefined) {
+    console.log(`\n${chalk.bold('Notes')}`);
+    console.log(extras.notes?.body ? extras.notes.body : chalk.gray('No notes yet.'));
+  }
+  if (extras.decisions) {
+    console.log(`\n${chalk.bold('Decisions and open questions')}`);
+    if (extras.decisions.length === 0) console.log(chalk.gray('None logged against this occurrence.'));
+    for (const d of extras.decisions) {
+      console.log(`  ${chalk.gray(d.label)} ${d.statement} ${chalk[getDecisionStatusColor(d.status)](`[${d.status}]`)}`);
+    }
+  }
+  if (extras.updates) outputOccurrenceUpdatesPretty(extras.updates);
+  console.log();
 }

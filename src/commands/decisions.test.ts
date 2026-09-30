@@ -161,6 +161,24 @@ afterEach(() => {
 });
 
 describe('decisions list', () => {
+  it('--occurrence filters to that occurrence and caps after filtering', async () => {
+    const { list } = makeClient();
+    list.mockResolvedValue([
+      makeRow('d1', { occurrenceId: 'o1' }),
+      makeRow('d2', { occurrenceId: 'o2' }),
+      makeRow('d3', { occurrenceId: 'o1' }),
+      makeRow('d4', { occurrenceId: 'o1' }),
+    ]);
+    await run(['list', '--occurrence', 'o1', '--limit', '2']);
+    expect(list).toHaveBeenCalledWith(expect.objectContaining({ limit: undefined }));
+    const payload = JSON.parse(loggedText()) as {
+      decisions: Array<{ id: string }>;
+      occurrenceId: string;
+    };
+    expect(payload.decisions.map((d) => d.id)).toEqual(['d1', 'd3']);
+    expect(payload.occurrenceId).toBe('o1');
+  });
+
   it('sends repeated --status as a statuses array', async () => {
     const { list } = makeClient();
     await run(['list', '--status', 'OPEN', '--status', 'accepted']);
