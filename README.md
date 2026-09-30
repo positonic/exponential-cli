@@ -207,6 +207,49 @@ exponential meetings notes set <cuid> --file notes.md          # or inline, or -
 exponential meetings notes append <cuid> "Follow-up: ship it"  # separated by a blank line
 ```
 
+### Ceremonies and occurrences
+
+Ceremonies are a workspace's recurring meetings (Settings → Ceremonies). Each
+scheduled instance is an **occurrence**: the page at
+`/w/<slug>/ceremonies/<ceremonyId>/<occurrenceId>`. Anywhere a command takes a
+ceremony or occurrence you can paste that URL. The URL carries its own workspace,
+so you don't need `--workspace`.
+
+```bash
+# Definitions
+exponential ceremonies list --workspace clear            # --include-inactive for retired ones
+exponential ceremonies get leadership-weekly --workspace clear   # id, slug or URL
+exponential ceremonies templates
+
+# Occurrences: 14 days either side of now by default
+exponential ceremonies occurrences list --workspace clear --ceremony leadership-weekly
+exponential ceremonies occurrences list --workspace clear --from 2026-09-01 --to 2026-10-31
+
+# One meeting instance: agenda, recordings, and (opt-in) notes, decisions, async updates
+exponential ceremonies occurrences get https://www.exponential.im/w/clear/ceremonies/<cid>/<oid> \
+  --notes --decisions --updates
+
+# Async standup updates
+exponential ceremonies occurrences updates <occurrence>             # everyone's
+exponential ceremonies occurrences my-update <occurrence> --draft   # draft yours from your activity
+exponential ceremonies occurrences my-update <occurrence> --answer "today=Review PRs" --submit
+
+# Agenda (owner, or workspace owner/admin, for generate/skip)
+exponential ceremonies occurrences generate-agenda <occurrence> --circulate
+exponential ceremonies occurrences agenda add <occurrence> --section <key> --title "Pricing"
+exponential ceremonies occurrences agenda resolve <occurrence> <itemId>   # --reopen to undo
+exponential ceremonies occurrences skip <occurrence> --reason "Nothing to discuss"
+exponential ceremonies occurrences attach <occurrence> --meeting <meeting-cuid>
+
+# Create / edit definitions. update only changes the flags you pass.
+exponential ceremonies create --template daily-standup --timezone Europe/Madrid --starts-on 2026-10-05 \
+  --participant <userId> --participant <userId>
+exponential ceremonies update leadership-weekly --duration 45
+exponential ceremonies update leadership-weekly --inactive
+exponential ceremonies import ceremonies.json --timezone Europe/Madrid   # upsert by slug
+exponential ceremonies backfill            # dry run; --apply attaches recordings by alias
+```
+
 ### Decisions and open questions
 
 The workspace Decision Log. **An open question is a decision with `--status OPEN`** —
@@ -222,6 +265,9 @@ exponential decisions list --workspace clear --number 3 --limit 20   # D-0003; c
 
 # Everything logged from one meeting — both panels (drafts too, if you can edit it)
 exponential decisions list --meeting <meeting-cuid>
+
+# Everything logged in one ceremony occurrence
+exponential decisions list --workspace clear --occurrence <occurrence-cuid>
 
 # One decision in full: body, evidence, deciders, chain and links
 exponential decisions get <cuid>

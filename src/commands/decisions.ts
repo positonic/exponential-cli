@@ -311,6 +311,7 @@ export function createDecisionsCommand(): Command {
     .option('--number <n>', 'One decision by its workspace sequence number (D-0003 is 3)')
     .option('--limit <n>', 'Cap the rows returned (1-500)')
     .option('--adr <id>', 'Decisions formalised as this ADR document')
+    .option('--occurrence <id>', 'Only decisions logged in this ceremony occurrence')
     .action(
       async (
         options: {
@@ -325,6 +326,7 @@ export function createDecisionsCommand(): Command {
           number?: string;
           limit?: string;
           adr?: string;
+          occurrence?: string;
         },
         cmd: Command,
       ) => {
@@ -367,7 +369,8 @@ export function createDecisionsCommand(): Command {
           // `listForAdr` is its own query, not a filter on the log — running
           // the unbounded list first and discarding it is a wasted round trip
           // over every decision the caller can see.
-          const rows = options.adr
+          const limit = parsePositiveInt(options.limit, '--limit');
+          const all = options.adr
             ? await client.decisions.listForAdr(workspaceId, options.adr)
             : await client.decisions.list({
                 workspaceId,
@@ -378,9 +381,20 @@ export function createDecisionsCommand(): Command {
                 projectId: options.project,
                 search: options.search,
                 number: parsePositiveInt(options.number, '--number'),
-                limit: parsePositiveInt(options.limit, '--limit'),
+                // With --occurrence the cap applies after filtering, below.
+                limit: options.occurrence ? undefined : limit,
               });
-          if (useJson) outputDecisionsJson(rows, { workspaceId });
+          // `decision.list` has no occurrence filter server-side, so this
+          // one is applied here.
+          const rows = options.occurrence
+            ? all.filter((d) => d.occurrenceId === options.occurrence).slice(0, limit)
+            : all;
+          if (useJson) {
+            outputDecisionsJson(
+              rows,
+              options.occurrence ? { workspaceId, occurrenceId: options.occurrence } : { workspaceId },
+            );
+          }
           else outputDecisionsPretty(rows);
         } catch (error) {
           handleError(error, useJson);
