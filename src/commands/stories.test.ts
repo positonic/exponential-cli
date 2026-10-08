@@ -22,11 +22,24 @@ function makeClient() {
     updatedAt: new Date('2026-01-01'),
   });
   const list = vi.fn().mockResolvedValue([]);
-  const client = { userStories: { create, list } };
+  const update = vi.fn().mockResolvedValue({
+    id: 'us1',
+    featureId: 'f1',
+    scopeId: null,
+    asA: 'CLI user',
+    iWant: 'to edit a story',
+    soThat: null,
+    acceptanceCriteria: null,
+    displayOrder: 0,
+    createdAt: new Date('2026-01-01'),
+    updatedAt: new Date('2026-01-01'),
+  });
+  const remove = vi.fn().mockResolvedValue({ success: true });
+  const client = { userStories: { create, list, update, delete: remove } };
   vi.mocked(clientModule.getClient).mockReturnValue(
     client as unknown as ReturnType<typeof clientModule.getClient>,
   );
-  return { client, create, list };
+  return { client, create, list, update, remove };
 }
 
 // Run the `stories` subcommand with args, as if typed after `features stories`.
@@ -172,5 +185,58 @@ describe('features stories list', () => {
     const { list } = makeClient();
     await run(['list', '--feature', 'f1']);
     expect(list).toHaveBeenCalledWith({ featureId: 'f1' });
+  });
+});
+
+describe('features stories update', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    Object.defineProperty(process.stdout, 'isTTY', { value: false, configurable: true });
+  });
+
+  it('sends only the fields passed, mapping flags to SDK fields', async () => {
+    const { update } = makeClient();
+    await run(['update', '--id', 'us1', '--i-want', 'to edit a story', '--acceptance', 'it saves']);
+    expect(update).toHaveBeenCalledWith({
+      id: 'us1',
+      asA: undefined,
+      iWant: 'to edit a story',
+      soThat: undefined,
+      acceptanceCriteria: 'it saves',
+      scopeId: undefined,
+    });
+  });
+
+  it('--scope null ungroups the story', async () => {
+    const { update } = makeClient();
+    await run(['update', '--id', 'us1', '--scope', 'null']);
+    expect(update).toHaveBeenCalledWith(expect.objectContaining({ id: 'us1', scopeId: null }));
+  });
+
+  it('emits the updated story as JSON when piped', async () => {
+    makeClient();
+    const log = vi.spyOn(console, 'log');
+    await run(['update', '--id', 'us1', '--as-a', 'CLI user']);
+    const jsonLine = log.mock.calls
+      .map((c) => String(c[0]))
+      .find((s) => s.trim().startsWith('{'));
+    expect(JSON.parse(jsonLine!)).toMatchObject({ id: 'us1', asA: 'CLI user' });
+  });
+});
+
+describe('features stories rm', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    Object.defineProperty(process.stdout, 'isTTY', { value: false, configurable: true });
+  });
+
+  it('deletes the story by id', async () => {
+    const { remove } = makeClient();
+    const log = vi.spyOn(console, 'log');
+    await run(['rm', '--id', 'us1']);
+    expect(remove).toHaveBeenCalledWith('us1');
+    expect(JSON.parse(String(log.mock.calls[0]![0]))).toEqual({ success: true });
   });
 });

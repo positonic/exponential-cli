@@ -63,6 +63,10 @@ function makeClient(overrides: { goal?: Record<string, unknown> } = {}) {
     list: vi.fn().mockResolvedValue([makeGoal()]),
     tree: vi.fn().mockResolvedValue([]),
     get: vi.fn().mockResolvedValue(overrides.goal ?? makeGoal()),
+    listByProject: vi.fn().mockResolvedValue([
+      makeGoal(),
+      makeGoal({ id: 47, title: 'Older goal', period: 'Q2-2026', status: 'completed' }),
+    ]),
     create: vi.fn().mockResolvedValue(makeGoal()),
     update: vi.fn().mockResolvedValue(makeGoal()),
     setStatus: vi.fn().mockResolvedValue(makeGoal({ status: 'completed' })),
@@ -210,6 +214,42 @@ describe('goals list', () => {
     await run(['list', '--workspace', 'clear', '--status', 'nope']);
 
     expect(goals.list).not.toHaveBeenCalled();
+    expect(exit).toHaveBeenCalledWith(1);
+  });
+});
+
+describe('goals list --project', () => {
+  it('reads the project\'s objectives instead of a workspace list', async () => {
+    const goals = makeClient();
+    const log = vi.spyOn(console, 'log');
+
+    await run(['list', '--project', 'proj1']);
+
+    expect(goals.listByProject).toHaveBeenCalledWith('proj1');
+    expect(goals.list).not.toHaveBeenCalled();
+    expect(resolveModule.resolveWorkspace).not.toHaveBeenCalled();
+    expect(jsonFromLog(log).total).toBe(2);
+  });
+
+  it('applies --period and --status locally', async () => {
+    makeClient();
+    const log = vi.spyOn(console, 'log');
+
+    await run(['list', '--project', 'proj1', '--period', 'Q3-2026', '--status', 'active']);
+
+    const out = jsonFromLog(log);
+    expect(out.total).toBe(1);
+    expect((out.goals as Record<string, unknown>[])[0]).toMatchObject({ id: 46 });
+  });
+
+  it('refuses --project combined with workspace or tree flags', async () => {
+    const goals = makeClient();
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+
+    await run(['list', '--project', 'proj1', '--tree']);
+    await run(['list', '--project', 'proj1', '--workspace', 'clear']);
+
+    expect(goals.listByProject).not.toHaveBeenCalled();
     expect(exit).toHaveBeenCalledWith(1);
   });
 });

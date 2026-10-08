@@ -23,6 +23,8 @@ import {
   outputTicketPretty,
   outputTicketsJson,
   outputTicketsPretty,
+  outputTicketSearchJson,
+  outputTicketSearchPretty,
   outputActionJson,
   outputActionPretty,
 } from '../utils/output.js';
@@ -199,6 +201,66 @@ export function createTicketsCommand(): Command {
           }
           if (useJson) outputTicketsJson(filtered);
           else outputTicketsPretty(filtered);
+        } catch (error) {
+          handleError(error, useJson);
+        }
+      },
+    );
+
+  tickets
+    .command('search <query>')
+    .description(
+      [
+        'Find tickets in a product by free text — the same picker search the app uses',
+        'when you link a dependency. Matches title (case-insensitive substring), shortId',
+        '(word-order-insensitive, so "toucan.prime" finds prime.toucan) or an exact',
+        'ticket number. Most recently updated first. Returns slim rows (id, number,',
+        'shortId, title, status, priority, assignee); use `tickets get` for the rest.',
+      ].join('\n'),
+    )
+    .requiredOption('--product <slug|id>', 'Product slug or CUID')
+    .option('--workspace <slug|id>', 'Workspace (required when --product is a slug)')
+    .option('--limit <n>', 'Max results, 1-50 (default 20)')
+    .option('--exclude <id>', 'Ticket CUID to leave out of the results')
+    .action(
+      async (
+        query: string,
+        options: {
+          product: string;
+          workspace?: string;
+          limit?: string;
+          exclude?: string;
+        },
+        cmd: Command,
+      ) => {
+        const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+        const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+        try {
+          const trimmed = query.trim();
+          if (!trimmed) {
+            throw new Error('Search query is empty. Use `tickets list` to list a product\'s tickets.');
+          }
+          if (trimmed.length > 200) {
+            throw new Error('Search query is too long (max 200 characters).');
+          }
+          let limit: number | undefined;
+          if (options.limit !== undefined) {
+            limit = Number(options.limit);
+            if (!Number.isInteger(limit) || limit < 1 || limit > 50) {
+              throw new Error(`Invalid --limit "${options.limit}". Use a whole number from 1 to 50.`);
+            }
+          }
+          const client = getClient();
+          const workspaceId = await resolveWorkspaceId(client, options.workspace);
+          const productId = await resolveProductId(client, workspaceId, options.product);
+          const hits = await client.tickets.search({
+            productId,
+            query: trimmed,
+            excludeTicketId: options.exclude,
+            limit,
+          });
+          if (useJson) outputTicketSearchJson(hits, trimmed);
+          else outputTicketSearchPretty(hits, trimmed);
         } catch (error) {
           handleError(error, useJson);
         }

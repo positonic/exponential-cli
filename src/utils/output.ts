@@ -38,6 +38,7 @@ import type {
   GoalComment,
   FeatureComment,
   PageComment,
+  TicketDependencyEdge,
   TicketDetail,
   DayReport,
   TimeConfirmDayResult,
@@ -1143,6 +1144,45 @@ export function outputTicketsPretty(tickets: Ticket[]): void {
     const typeBadge = chalk.gray(`[${t.type}]`);
     const blocked = t.isBlocked ? chalk.red(' BLOCKED') : '';
     console.log(`  ${statusBadge} ${typeBadge} ${chalk.bold(id)} ${t.title}${blocked}`);
+    console.log(chalk.gray(`    ID: ${t.id}`));
+  }
+  console.log();
+}
+
+// `tickets search` returns slim picker rows (TicketDependencyEdge), not full
+// tickets — no type, body, product or timestamps — so they get their own shape.
+function transformTicketSearchHit(hit: TicketDependencyEdge): Record<string, unknown> {
+  return {
+    id: hit.id,
+    number: hit.number,
+    shortId: hit.shortId,
+    title: hit.title,
+    status: hit.status,
+    priority: hit.priority,
+    assignee: hit.assignee ?? null,
+  };
+}
+
+export function outputTicketSearchJson(hits: TicketDependencyEdge[], query: string): void {
+  console.log(JSON.stringify({
+    query,
+    tickets: hits.map(transformTicketSearchHit),
+    total: hits.length,
+  }, null, 2));
+}
+
+export function outputTicketSearchPretty(hits: TicketDependencyEdge[], query: string): void {
+  if (hits.length === 0) {
+    console.log(chalk.gray(`No tickets match "${query}".`));
+    return;
+  }
+  console.log(chalk.bold(`\nTickets matching "${query}" (${hits.length})`));
+  console.log(chalk.gray('─'.repeat(50)));
+  for (const t of hits) {
+    const id = t.shortId ?? (t.number != null ? `#${t.number}` : '?');
+    const statusBadge = chalk[getTicketStatusColor(t.status)](`[${t.status}]`);
+    const assignee = t.assignee ? chalk.gray(` — ${t.assignee.name ?? t.assignee.id}`) : '';
+    console.log(`  ${statusBadge} ${chalk.bold(id)} ${t.title}${assignee}`);
     console.log(chalk.gray(`    ID: ${t.id}`));
   }
   console.log();

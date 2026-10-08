@@ -37,8 +37,9 @@ function makeClient() {
     { id: 'p1', slug: 'alpha', name: 'Alpha' },
     { id: 'p2', slug: 'beta', name: 'Beta' },
   ]);
+  const searchTickets = vi.fn().mockResolvedValue([]);
   const client = {
-    tickets: { list: listTickets },
+    tickets: { list: listTickets, search: searchTickets },
     products: { list: listProducts },
     labels: { listForEntity: vi.fn().mockResolvedValue([]) },
   };
@@ -47,7 +48,7 @@ function makeClient() {
   );
   vi.mocked(resolveModule.resolveWorkspaceId).mockResolvedValue('ws1');
   vi.mocked(resolveModule.resolveProductId).mockResolvedValue('p1');
-  return { listTickets, listProducts };
+  return { listTickets, listProducts, searchTickets };
 }
 
 async function run(args: string[]) {
@@ -128,6 +129,74 @@ describe('tickets list sweeps products for a --branch/--pr lookup', () => {
     await run(['list', '--workspace', 'clear']);
 
     expect(listTickets).not.toHaveBeenCalled();
+    expect(exit).toHaveBeenCalledWith(1);
+  });
+});
+
+// `product.ticket.search` is the dependency-picker search: product-scoped,
+// title/shortId/number match, slim TicketDependencyEdge rows.
+describe('tickets search', () => {
+  const hit = {
+    id: 't1',
+    number: 42,
+    shortId: 'prime.toucan',
+    title: 'Fix the login redirect',
+    status: 'IN_PROGRESS',
+    priority: 1,
+    assignee: { id: 'u1', name: 'Ada', image: null },
+  };
+
+  it('resolves the product and forwards query, limit and exclude', async () => {
+    const { searchTickets } = makeClient();
+
+    await run([
+      'search', 'login',
+      '--product', 'alpha', '--workspace', 'clear',
+      '--limit', '5', '--exclude', 't9',
+    ]);
+
+    expect(resolveModule.resolveProductId).toHaveBeenCalledWith(
+      expect.anything(),
+      'ws1',
+      'alpha',
+    );
+    expect(searchTickets).toHaveBeenCalledWith({
+      productId: 'p1',
+      query: 'login',
+      excludeTicketId: 't9',
+      limit: 5,
+    });
+  });
+
+  it('emits slim rows as JSON when piped', async () => {
+    const { searchTickets } = makeClient();
+    searchTickets.mockResolvedValueOnce([hit]);
+    const log = vi.spyOn(console, 'log');
+
+    await run(['search', 'toucan', '--product', 'alpha']);
+
+    const out = JSON.parse(String(log.mock.calls[0]![0])) as Record<string, unknown>;
+    expect(out).toMatchObject({ query: 'toucan', total: 1 });
+    expect((out.tickets as unknown[])[0]).toEqual(hit);
+  });
+
+  it('rejects an out-of-range --limit before calling the API', async () => {
+    const { searchTickets } = makeClient();
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+
+    await run(['search', 'login', '--product', 'alpha', '--limit', '51']);
+
+    expect(searchTickets).not.toHaveBeenCalled();
+    expect(exit).toHaveBeenCalledWith(1);
+  });
+
+  it('rejects a blank query, pointing at tickets list', async () => {
+    const { searchTickets } = makeClient();
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+
+    await run(['search', '   ', '--product', 'alpha']);
+
+    expect(searchTickets).not.toHaveBeenCalled();
     expect(exit).toHaveBeenCalledWith(1);
   });
 });

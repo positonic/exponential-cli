@@ -196,5 +196,28 @@ export function createEpicsCommand(): Command {
       },
     );
 
+  epics
+    .command('delete')
+    .description(
+      'Delete an epic. Its tickets and actions are unlinked from it (epicId is ' +
+        'cleared), not deleted. Only workspace owners/admins and the epic owner can delete.',
+    )
+    .requiredOption('--id <id>', 'Epic CUID')
+    .action(async (options: { id: string }, cmd: Command) => {
+      const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+      const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+      try {
+        const client = getClient();
+        await client.epics.delete(options.id);
+        if (useJson) {
+          console.log(JSON.stringify({ deleted: true, id: options.id }, null, 2));
+        } else {
+          console.log('\n✓ Epic deleted');
+        }
+      } catch (error) {
+        handleError(error, useJson);
+      }
+    });
+
   return epics;
 }

@@ -140,6 +140,7 @@ and live under `goals kr`.
 exponential goals list --workspace clear --period Q3-2026
 exponential goals list --workspace clear --tree
 exponential goals list --all-workspaces       # "what am I neglecting" is cross-workspace
+exponential goals list --project <cuid>       # objectives (yours) linked to a project
 
 exponential goals get 46
 exponential goals create --workspace clear --title "Ship the CLI" --period Q3-2026
@@ -310,6 +311,27 @@ exponential projects update --id <cuid> --product none
 
 # Refuses while the project still has actions or OKR links
 exponential projects delete --id <cuid> [--force]
+```
+
+### Products, tickets, epics and user stories
+
+```bash
+# Products take a slug or a CUID
+exponential products list --workspace clear
+exponential products update <slug|cuid> --workspace clear --description "..." [--fun-ticket-ids|--no-fun-ticket-ids]
+# Deleting a product cascades its features, tickets and epics: refuses unless --force
+exponential products delete <slug|cuid> --workspace clear [--force]
+
+# Free-text ticket search within a product: title, shortId or ticket number
+exponential tickets search "login redirect" --product <slug|cuid> --workspace clear [--limit 50]
+
+# Epics: their tickets and actions are unlinked, not deleted
+exponential epics delete --id <cuid>
+
+# A feature's native user stories
+exponential features stories list --feature <cuid>
+exponential features stories update --id <story-cuid> --i-want "..." [--scope <scope-cuid>|null]
+exponential features stories rm --id <story-cuid>
 ```
 
 ### Workspaces
