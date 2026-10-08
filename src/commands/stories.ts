@@ -173,5 +173,66 @@ export function createStoriesCommand(): Command {
       },
     );
 
+  stories
+    .command('update')
+    .description('Update a user story. Only the fields you pass are written.')
+    .requiredOption('--id <id>', 'User story CUID')
+    .option('--as-a <text>', '"As a ..." actor')
+    .option('--i-want <text>', '"I want ..." capability')
+    .option('--so-that <text>', '"So that ..." outcome')
+    .option('--acceptance <text>', 'Acceptance criteria')
+    .option('--scope <id>', 'Feature scope CUID to group the story under (or "null" to ungroup)')
+    .action(
+      async (
+        options: {
+          id: string;
+          asA?: string;
+          iWant?: string;
+          soThat?: string;
+          acceptance?: string;
+          scope?: string;
+        },
+        cmd: Command,
+      ) => {
+        const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+        const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+        try {
+          const client = getClient();
+          const story = await client.userStories.update({
+            id: options.id,
+            asA: options.asA,
+            iWant: options.iWant,
+            soThat: options.soThat,
+            acceptanceCriteria: options.acceptance,
+            scopeId: options.scope === 'null' ? null : options.scope,
+          });
+          if (useJson) outputUserStoryJson(story);
+          else {
+            console.log('\n✓ User story updated');
+            outputUserStoryPretty(story);
+          }
+        } catch (error) {
+          handleError(error, useJson);
+        }
+      },
+    );
+
+  stories
+    .command('rm')
+    .description('Delete a user story')
+    .requiredOption('--id <id>', 'User story CUID')
+    .action(async (options: { id: string }, cmd: Command) => {
+      const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+      const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+      try {
+        const client = getClient();
+        const result = await client.userStories.delete(options.id);
+        if (useJson) console.log(JSON.stringify(result, null, 2));
+        else console.log('\n✓ User story deleted');
+      } catch (error) {
+        handleError(error, useJson);
+      }
+    });
+
   return stories;
 }

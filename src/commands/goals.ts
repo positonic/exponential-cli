@@ -737,6 +737,12 @@ export function createGoalsCommand(): Command {
     .option('--period <period>', 'Filter by period, e.g. Q3-2026')
     .option('--status <status>', `Filter by status: ${GOAL_STATUSES.join(', ')}`)
     .option('--tree', 'Render the parent/child cascade instead of a flat list')
+    .option(
+      '--project <cuid>',
+      'Only objectives linked to this project (yours only — the server scopes this ' +
+        'lookup to objectives you created). Not combinable with --workspace, ' +
+        '--all-workspaces or --tree.',
+    )
     .action(
       async (
         options: {
@@ -745,6 +751,7 @@ export function createGoalsCommand(): Command {
           period?: string;
           status?: string;
           tree?: boolean;
+          project?: string;
         },
         cmd: Command,
       ) => {
@@ -753,6 +760,31 @@ export function createGoalsCommand(): Command {
         try {
           const status = validateGoalStatus(options.status);
           const client = getClient();
+
+          if (options.project) {
+            // A project already pins the workspace, and getProjectGoals is a
+            // flat, unfiltered read — so the workspace/tree flags can't apply.
+            const conflicting = [
+              options.workspace ? '--workspace' : null,
+              options.allWorkspaces ? '--all-workspaces' : null,
+              options.tree ? '--tree' : null,
+            ].filter(Boolean);
+            if (conflicting.length > 0) {
+              throw new Error(
+                `--project can't be combined with ${conflicting.join(', ')}.`,
+              );
+            }
+            // getProjectGoals takes no period/status input, so filter here.
+            const list = (await client.goals.listByProject(options.project)).filter(
+              (g) =>
+                (!options.period || g.period === options.period) &&
+                (!status || g.status === status),
+            );
+            if (useJson) outputGoalsJson(list);
+            else outputGoalsPretty(list);
+            return;
+          }
+
           const workspaces = await targetWorkspaces(client, options);
 
           if (options.tree) {
