@@ -9,7 +9,7 @@ describe('MCP session for a run', () => {
       mcpServers: {
         exponential: {
           command: 'npx',
-          args: ['-y', 'exponential-mcp'],
+          args: ['-y', 'exponential-mcp', 'serve'],
           env: {
             EXPONENTIAL_API_KEY: 'exp_agent_abc',
             EXPONENTIAL_API_URL: 'http://localhost:3000',

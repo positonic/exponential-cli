@@ -19,12 +19,12 @@ export interface McpSessionInput {
   apiUrl: string;
   runId: string;
   runnerId: string;
-  /** Default `npx -y exponential-mcp`. */
+  /** Default `npx -y exponential-mcp serve` — `serve` starts the server; bare `exponential-mcp` prints its setup help. */
   command?: string[];
 }
 
 export function buildMcpConfig(input: McpSessionInput): Record<string, unknown> {
-  const [command, ...args] = input.command ?? ['npx', '-y', 'exponential-mcp'];
+  const [command, ...args] = input.command ?? ['npx', '-y', 'exponential-mcp', 'serve'];
   return {
     mcpServers: {
       [MCP_SERVER_NAME]: {
