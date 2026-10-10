@@ -395,7 +395,7 @@ exponential runner install
 exponential runner uninstall
 ```
 
-For each run the runner spawns `claude -p <brief> --output-format stream-json --append-system-prompt <persona>` with a per-run Exponential MCP server (`exponential-mcp` ≥ 0.8) so the session can `report_progress`, `ask_owner` and `finish_run`; the stream is parsed into the run's transcript, heartbeats keep the run alive, and the run is finished with the session's summary. Calls to the app retry with backoff and are idempotent, so a laptop going to sleep loses nothing. Add tools the session may use without asking with `runner config set allowed-tools "Read,Bash(git:*)"`.
+For each run the runner spawns `claude -p <brief> --output-format stream-json --append-system-prompt <persona>` with a per-run Exponential MCP server (`npx -y exponential-mcp serve`, `exponential-mcp` ≥ 0.8) so the session can `report_progress`, `ask_owner` and `finish_run`; the stream is parsed into the run's transcript, heartbeats keep the run alive, and the run is finished with the session's summary. Calls to the app retry with backoff and are idempotent, so a laptop going to sleep loses nothing. Add tools the session may use without asking with `runner config set allowed-tools "Read,Bash(git:*)"`.
 
 ## Output Formats
 

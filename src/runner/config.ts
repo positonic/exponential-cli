@@ -14,7 +14,7 @@ export interface RunnerConfig {
   cli?: 'claude';
   /** Extra tool names the spawned session may use without asking (added to the run tools). */
   allowedTools?: string[];
-  /** Command that starts the Exponential MCP server for the session (default: `npx -y exponential-mcp`). */
+  /** Command that starts the Exponential MCP server for the session (default: `npx -y exponential-mcp serve`). */
   mcpCommand?: string[];
 }
 
