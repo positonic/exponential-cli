@@ -374,6 +374,29 @@ and an ambiguous name is an error rather than a guess.
 
 Editing and deleting are author-only. Find ids with `exponential search "<text>"`.
 
+### Runner — run your Assistant on this machine
+
+An Assistant whose executor is **My machine (local runner)** (Settings → AI assistant → Delegation) is never run on the server. Instead this CLI claims its queued runs with the Assistant's runner key and works them with Claude Code under your own login, in a directory you choose. The server never names the directory or the CLI.
+
+```bash
+# 1. Log in with the Assistant's runner key (Settings → AI assistant → New runner key)
+exponential auth login --token exp_agent_... --api-url https://www.exponential.im
+
+# 2. Choose where the spawned session works (local config only)
+exponential runner config set cwd ~/code/my-project
+
+# 3. Work queued runs until stopped, or claim one and exit
+exponential runner start
+exponential runner start --once --runner-id laptop
+
+# 4. Keep it running as a user service (launchd on macOS, systemd --user on Linux)
+exponential runner install --dry-run   # show the service file first
+exponential runner install
+exponential runner uninstall
+```
+
+For each run the runner spawns `claude -p <brief> --output-format stream-json --append-system-prompt <persona>` with a per-run Exponential MCP server (`npx -y exponential-mcp serve`, `exponential-mcp` ≥ 0.8) so the session can `report_progress`, `ask_owner` and `finish_run`; the stream is parsed into the run's transcript, heartbeats keep the run alive, and the run is finished with the session's summary. Calls to the app retry with backoff and are idempotent, so a laptop going to sleep loses nothing. Add tools the session may use without asking with `runner config set allowed-tools "Read,Bash(git:*)"`.
+
 ## Output Formats
 
 ### JSON Output (for LLMs and automation)

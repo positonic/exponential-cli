@@ -13,6 +13,7 @@ import { createPagesCommand } from './commands/pages.js';
 import { createProductsCommand } from './commands/products.js';
 import { createProjectsCommand } from './commands/projects.js';
 import { createResourcesCommand } from './commands/resources.js';
+import { createRunnerCommand } from './commands/runner.js';
 import { createSearchCommand } from './commands/search.js';
 import { createTicketsCommand } from './commands/tickets.js';
 import { createTimeCommand } from './commands/time.js';
@@ -78,6 +79,7 @@ export function buildProgram(): Command {
   program.addCommand(createProductsCommand());
   program.addCommand(createProjectsCommand());
   program.addCommand(createResourcesCommand());
+  program.addCommand(createRunnerCommand());
   program.addCommand(createSearchCommand());
   program.addCommand(createTicketsCommand());
   program.addCommand(createTimeCommand());
