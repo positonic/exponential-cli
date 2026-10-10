@@ -133,3 +133,32 @@ describe('runOnce with the MCP run tools', () => {
     expect(outcome).toEqual({ runId: 'run-1', status: 'WAITING_ON_OWNER', eventsSent: 1 });
   });
 });
+
+describe('reconnect', () => {
+  it('re-sends an unacknowledged batch after a transient append failure and still finishes', async () => {
+    const { client, agentRuns } = fakeClient(run);
+    agentRuns.appendEvents.mockRejectedValueOnce(new Error('fetch failed'));
+    const { spawn } = fakeSpawner([
+      '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{}}]}}',
+      '{"type":"result","subtype":"success","result":"ok"}',
+    ]);
+    const sleep = vi.fn().mockResolvedValue(undefined);
+    const outcome = await runOnce({ client, runnerId: 'mbp', cwd: '/w', spawn, sleep, flushMs: 60_000 });
+    expect(agentRuns.appendEvents).toHaveBeenCalledTimes(2);
+    expect(agentRuns.appendEvents.mock.calls[1]![1]).toEqual(agentRuns.appendEvents.mock.calls[0]![1]);
+    expect(agentRuns.finish).toHaveBeenCalledTimes(1);
+    expect(outcome).toEqual({ runId: 'run-1', status: 'SUCCEEDED', eventsSent: 1 });
+  });
+
+  it('runForever backs off while claims fail and resets after a success', async () => {
+    const { client, agentRuns } = fakeClient(null);
+    agentRuns.claim.mockRejectedValueOnce(new Error('down')).mockRejectedValueOnce(new Error('down')).mockResolvedValue(null);
+    const { spawn } = fakeSpawner([]);
+    const sleep = vi.fn().mockResolvedValue(undefined);
+    await runForever({
+      client, runnerId: 'mbp', cwd: '/w', spawn, intervalMs: 1000, sleep,
+      shouldStop: () => agentRuns.claim.mock.calls.length >= 4,
+    });
+    expect(sleep.mock.calls.map((c) => c[0])).toEqual([2000, 4000, 1000]);
+  });
+});

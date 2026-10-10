@@ -2,6 +2,7 @@ import type { AgentRunsApi, ClaimedRun, FinishInput, RunnerEvent } from 'exponen
 import { StreamParser } from './stream.js';
 import type { Spawner } from './spawn.js';
 import { writeMcpSession, type McpSession } from './mcp.js';
+import { Backoff, withRetry } from './retry.js';
 
 /**
  * The local runner (Exponential ADR-0067, Agent PRD V2): claim a run with the
@@ -32,6 +33,9 @@ export interface RunnerOptions {
   heartbeatMs?: number;
   /** Flush events at most this often (ms) while the session runs. */
   flushMs?: number;
+  /** Attempts per app call before giving up (default 5, exponential backoff). */
+  retryAttempts?: number;
+  sleep?: (ms: number) => Promise<void>;
   log?: (line: string) => void;
 }
 
@@ -64,11 +68,16 @@ export async function runOnce(options: RunnerOptions): Promise<RunOutcome | null
   let eventsSent = 0;
   let cancelled = false;
 
+  const retry = { log, sleep: options.sleep, attempts: options.retryAttempts };
+  // Events not yet acknowledged by the app; appendEvents is idempotent on seq,
+  // so after a lost connection the same batch is simply sent again.
+  let pending: RunnerEvent[] = [];
   const flush = async () => {
-    const batch = parser.drain();
-    for (let i = 0; i < batch.length; i += MAX_BATCH) {
-      const slice = batch.slice(i, i + MAX_BATCH);
-      await client.agentRuns.appendEvents(run.id, slice, runnerId);
+    pending.push(...parser.drain());
+    while (pending.length > 0) {
+      const slice = pending.slice(0, MAX_BATCH);
+      await withRetry(() => client.agentRuns.appendEvents(run.id, slice, runnerId), retry);
+      pending = pending.slice(slice.length);
       eventsSent += slice.length;
     }
   };
@@ -148,25 +157,33 @@ export async function runOnce(options: RunnerOptions): Promise<RunOutcome | null
       usage: snap.usage ?? undefined,
     };
   }
-  await client.agentRuns.finish(run.id, outcome, runnerId);
+  await withRetry(() => client.agentRuns.finish(run.id, outcome, runnerId), retry);
   log(`run ${run.id} ${outcome.status.toLowerCase()} (${eventsSent} events)`);
   return { runId: run.id, status: outcome.status, eventsSent };
 }
 
 /** Poll until stopped: claim and work a run, then wait `intervalMs` when the queue is empty. */
 export async function runForever(
-  options: RunnerOptions & { intervalMs: number; shouldStop: () => boolean; sleep?: (ms: number) => Promise<void> },
+  options: RunnerOptions & { intervalMs: number; shouldStop: () => boolean },
 ): Promise<void> {
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const log = options.log ?? (() => undefined);
+  // While the app is unreachable the poll interval doubles (capped at five
+  // minutes) and snaps back on the first successful poll — reconnect without
+  // hammering, without giving up.
+  const backoff = new Backoff(options.intervalMs);
   while (!options.shouldStop()) {
     let outcome: RunOutcome | null = null;
+    let failed = false;
     try {
       outcome = await runOnce(options);
+      backoff.success();
     } catch (err) {
-      log(`runner error: ${err instanceof Error ? err.message : String(err)}`);
+      failed = true;
+      backoff.failure();
+      log(`runner error: ${err instanceof Error ? err.message : String(err)} — next poll in ${Math.round(backoff.delayMs / 1000)}s`);
     }
-    if (!outcome && !options.shouldStop()) await sleep(options.intervalMs);
+    if ((!outcome || failed) && !options.shouldStop()) await sleep(backoff.delayMs);
   }
 }
 

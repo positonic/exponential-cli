@@ -1,5 +1,8 @@
 import { Command } from 'commander';
-import { hostname } from 'node:os';
+import { hostname, homedir, tmpdir } from 'node:os';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 import { getClient } from '../client/index.js';
 import { getConfig } from '../config/index.js';
@@ -7,6 +10,7 @@ import { loadRunnerConfig, runnerConfigPath, saveRunnerConfig } from '../runner/
 import { handleError } from '../utils/errors.js';
 import { runForever, runOnce } from '../runner/loop.js';
 import { spawnClaude } from '../runner/spawn.js';
+import { planService, removeServiceFile, writeServiceFile } from '../runner/install.js';
 
 /**
  * `exponential runner start` — the local executor for an Assistant whose
@@ -59,6 +63,68 @@ export function createRunnerCommand(): Command {
         process.on('SIGTERM', onSignal);
         log(`polling every ${opts.interval}s in ${cwd}`);
         await runForever({ ...base, intervalMs: Number(opts.interval) * 1000, shouldStop: () => stop });
+      } catch (error) {
+        handleError(error);
+      }
+    });
+
+  cmd
+    .command('install')
+    .description('Keep the runner running as a user service (launchd on macOS, systemd --user on Linux)')
+    .option('--runner-id <id>', 'Name of this runner', hostname())
+    .option('--cwd <dir>', 'Working directory for the spawned CLI (defaults to runner config, then the current directory)')
+    .option('--dry-run', 'Print the service file and commands without installing')
+    .action((opts: { runnerId: string; cwd?: string; dryRun?: boolean }) => {
+      try {
+        getClient(); // fail early when not logged in with the runner key
+        const settings = loadRunnerConfig();
+        const cwd = resolve(opts.cwd ?? settings.cwd ?? process.cwd());
+        const logDir = resolve(homedir(), 'Library', 'Logs', 'exponential-runner');
+        const plan = planService({
+          exponentialBin: resolve(fileURLToPath(import.meta.url), '..', '..', 'bin', 'exponential.js'),
+          nodeBin: process.execPath,
+          runnerId: opts.runnerId,
+          cwd,
+          logDir: process.platform === 'darwin' ? logDir : resolve(tmpdir(), 'exponential-runner'),
+          path: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
+          home: homedir(),
+        });
+        if (opts.dryRun) {
+          console.log(`# ${plan.file}
+${plan.contents}
+# load: ${plan.load.join(' ')}
+# unload: ${plan.unload.join(' ')}`);
+          return;
+        }
+        if (plan.kind === 'launchd') mkdirSync(logDir, { recursive: true });
+        saveRunnerConfig({ cwd });
+        writeServiceFile(plan);
+        try {
+          execFileSync(plan.unload[0]!, plan.unload.slice(1), { stdio: 'ignore' });
+        } catch {
+          // not loaded yet
+        }
+        execFileSync(plan.load[0]!, plan.load.slice(1), { stdio: 'inherit' });
+        console.error(`Installed ${plan.kind} service ${plan.file}; the runner works in ${cwd}.`);
+      } catch (error) {
+        handleError(error);
+      }
+    });
+
+  cmd
+    .command('uninstall')
+    .description('Stop and remove the runner user service')
+    .action(() => {
+      try {
+        const plan = planService({
+          exponentialBin: '', nodeBin: '', runnerId: '', cwd: '', logDir: '', path: '', home: homedir(),
+        });
+        try {
+          execFileSync(plan.unload[0]!, plan.unload.slice(1), { stdio: 'ignore' });
+        } catch {
+          // not loaded
+        }
+        console.error(removeServiceFile(plan) ? `Removed ${plan.file}` : `No service file at ${plan.file}`);
       } catch (error) {
         handleError(error);
       }
