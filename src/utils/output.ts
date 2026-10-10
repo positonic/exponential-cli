@@ -32,6 +32,7 @@ import type {
   ProjectOutput,
   ProjectsListOutput,
   Requirement,
+  Resource,
   Ticket,
   TodaysActions,
   TicketComment,
@@ -2620,4 +2621,69 @@ export function outputDayReportPretty(report: DayReport, date: string): void {
   if (report.flags.length > 0) {
     console.log(chalk.yellow(`\n${report.flags.length} manual entr${report.flags.length === 1 ? 'y looks' : 'ies look'} like a forgotten timer`));
   }
+}
+
+// ---------------------------------------------------------------------------
+// Resources / Reading list
+// ---------------------------------------------------------------------------
+
+function hostnameOf(url: string | null): string | null {
+  if (!url) return null;
+  try {
+    return new URL(url).hostname.replace(/^www\./, '');
+  } catch {
+    return null;
+  }
+}
+
+function transformResource(r: Resource): Record<string, unknown> {
+  return {
+    id: r.id,
+    title: r.title,
+    url: r.url,
+    host: hostnameOf(r.url),
+    description: r.description,
+    contentType: r.contentType,
+    readStatus: r.readStatus,
+    readAt: r.readAt,
+    tags: r.tags,
+    createdAt: r.createdAt,
+    archivedAt: r.archivedAt,
+  };
+}
+
+export function outputResourceJson(resource: Resource): void {
+  console.log(JSON.stringify(transformResource(resource), null, 2));
+}
+
+export function outputResourcePretty(resource: Resource): void {
+  const badge = chalk.gray(`[${resource.readStatus}]`);
+  console.log(`  ${badge} ${chalk.bold(resource.title)}`);
+  if (resource.url) console.log(chalk.gray(`    ${resource.url}`));
+  if (resource.description) console.log(`    ${resource.description}`);
+  console.log(chalk.gray(`    ID: ${resource.id}`));
+}
+
+export function outputResourcesJson(resources: Resource[], filters: Record<string, unknown> = {}): void {
+  console.log(
+    JSON.stringify({ resources: resources.map(transformResource), total: resources.length, filters }, null, 2),
+  );
+}
+
+export function outputResourcesPretty(resources: Resource[], status: string): void {
+  const heading = status === 'unread' ? 'Reading list' : status === 'all' ? 'Resources' : `Resources (${status})`;
+  if (resources.length === 0) {
+    console.log(chalk.gray(status === 'unread' ? 'Nothing to read.' : 'No resources found.'));
+    return;
+  }
+  console.log(chalk.bold(`\n${heading} (${resources.length} total)`));
+  console.log(chalk.gray('─'.repeat(50)));
+  for (const r of resources) {
+    const when = r.readStatus === 'read' && r.readAt ? new Date(r.readAt) : new Date(r.createdAt);
+    const host = hostnameOf(r.url);
+    console.log(`  ${chalk.bold(r.title)}${host ? chalk.gray(`  ${host}`) : ''}  ${chalk.gray(when.toLocaleDateString())}`);
+    if (r.description) console.log(chalk.gray(`    ${r.description}`));
+    console.log(chalk.gray(`    ID: ${r.id}`));
+  }
+  console.log();
 }
