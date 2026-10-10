@@ -42,3 +42,21 @@ describe('StreamParser', () => {
     expect(p.snapshot()).toMatchObject({ isError: true, errorMessage: 'error_max_turns' });
   });
 });
+
+describe('MCP run tools in the stream', () => {
+  it('report_progress is a text note; ask_owner and finish_run are flagged so the runner does not finish twice', () => {
+    const p = new StreamParser();
+    p.feed('{"type":"assistant","message":{"content":[{"type":"tool_use","name":"mcp__exponential__report_progress","input":{"text":"Reading the brief"}}]}}');
+    p.feed('{"type":"assistant","message":{"content":[{"type":"tool_use","name":"mcp__exponential__ask_owner","input":{"question":"12 or 19 Nov?"}}]}}');
+    expect(p.events.map((e) => [e.kind, e.payload])).toEqual([
+      ['text', { text: 'Reading the brief' }],
+      ['tool_call', { tool: 'ask-owner', snippet: '12 or 19 Nov?' }],
+    ]);
+    expect(p.snapshot()).toMatchObject({ askedOwner: true, finishedViaTool: false });
+
+    const q = new StreamParser();
+    q.feed('{"type":"assistant","message":{"content":[{"type":"tool_use","name":"mcp__exponential__finish_run","input":{"summary":"Done","readyToClose":true}}]}}');
+    expect(q.snapshot()).toMatchObject({ finishedViaTool: true });
+    expect(q.events[0]!.payload).toEqual({ tool: 'finish-run', readyToClose: true });
+  });
+});

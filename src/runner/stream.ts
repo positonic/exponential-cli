@@ -25,6 +25,8 @@ export interface ParsedStream {
   usage: Record<string, unknown> | null;
   /** The session id from `system.init`, when present (for resume later). */
   sessionId: string | null;
+  askedOwner: boolean;
+  finishedViaTool: boolean;
 }
 
 interface ContentBlock {
@@ -64,6 +66,10 @@ export class StreamParser {
   errorMessage: string | null = null;
   usage: Record<string, unknown> | null = null;
   sessionId: string | null = null;
+  /** The session called ask_owner: the run is parked by the app; the runner must not finish it. */
+  askedOwner = false;
+  /** The session called finish_run itself: the runner's final finish is a no-op. */
+  finishedViaTool = false;
 
   constructor(firstSeq = 1) {
     this.nextSeq = firstSeq;
@@ -98,7 +104,20 @@ export class StreamParser {
         } else if (Array.isArray(content)) {
           for (const block of content) {
             if (block.type === 'tool_use') {
-              this.push('tool_call', { tool: block.name ?? 'tool', input: clip(block.input, 500) });
+              const name = block.name ?? 'tool';
+              const input = (block.input ?? {}) as Record<string, unknown>;
+              if (name.endsWith('__report_progress') && typeof input.text === 'string') {
+                // The session's own progress line: a transcript note, not a tool row.
+                this.push('text', { text: clip(input.text, 500) });
+              } else if (name.endsWith('__ask_owner')) {
+                this.askedOwner = true;
+                this.push('tool_call', { tool: 'ask-owner', snippet: clip(input.question, 200) });
+              } else if (name.endsWith('__finish_run')) {
+                this.finishedViaTool = true;
+                this.push('tool_call', { tool: 'finish-run', readyToClose: input.readyToClose === true });
+              } else {
+                this.push('tool_call', { tool: name, input: clip(block.input, 500) });
+              }
             } else if (block.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
               this.push('text', { text: clip(block.text) });
             }
@@ -151,6 +170,8 @@ export class StreamParser {
       errorMessage: this.errorMessage,
       usage: this.usage,
       sessionId: this.sessionId,
+      askedOwner: this.askedOwner,
+      finishedViaTool: this.finishedViaTool,
     };
   }
 }

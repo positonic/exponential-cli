@@ -112,3 +112,24 @@ describe('runForever', () => {
     expect(sleep).toHaveBeenCalledWith(1000);
   });
 });
+
+describe('runOnce with the MCP run tools', () => {
+  it('passes a per-run --mcp-config and the allowed run tools to the session, and does not finish a run the session already parked with ask_owner', async () => {
+    const { client, agentRuns } = fakeClient(run);
+    const { spawn, calls } = fakeSpawner([
+      '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"mcp__exponential__ask_owner","input":{"question":"Which date?"}}]}}',
+      '{"type":"result","subtype":"success","result":"Asked the owner."}',
+    ]);
+    const outcome = await runOnce({
+      client, runnerId: 'mbp', cwd: '/w', spawn,
+      mcp: { token: 'exp_agent_k', apiUrl: 'http://localhost:3000', allowedTools: ['Read'] },
+    });
+    const args = calls[0]!.extraArgs ?? [];
+    expect(args).toContain('--mcp-config');
+    expect(args[args.indexOf('--allowedTools') + 1]).toContain('mcp__exponential__ask_owner');
+    expect(args.join(' ')).not.toContain('exp_agent_k');
+    expect(agentRuns.appendEvents).toHaveBeenCalledWith('run-1', [expect.objectContaining({ kind: 'tool_call', payload: expect.objectContaining({ tool: 'ask-owner' }) })], 'mbp');
+    expect(agentRuns.finish).not.toHaveBeenCalled();
+    expect(outcome).toEqual({ runId: 'run-1', status: 'WAITING_ON_OWNER', eventsSent: 1 });
+  });
+});

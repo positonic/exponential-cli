@@ -1,6 +1,7 @@
 import type { AgentRunsApi, ClaimedRun, FinishInput, RunnerEvent } from 'exponential-sdk';
 import { StreamParser } from './stream.js';
 import type { Spawner } from './spawn.js';
+import { writeMcpSession, type McpSession } from './mcp.js';
 
 /**
  * The local runner (Exponential ADR-0067, Agent PRD V2): claim a run with the
@@ -20,8 +21,13 @@ export interface RunnerOptions {
   runnerId: string;
   cwd: string;
   spawn: Spawner;
-  /** Extra args for the spawned CLI (MCP config etc.). */
+  /** Extra args for the spawned CLI. */
   extraArgs?: string[];
+  /**
+   * Credentials for the per-run MCP server the session talks to its run
+   * through. Omit to spawn without the run tools (tests).
+   */
+  mcp?: { token: string; apiUrl: string; command?: string[]; allowedTools?: string[] };
   /** Heartbeat cadence while a session runs (ms). The app times out a silent run after 5 min. */
   heartbeatMs?: number;
   /** Flush events at most this often (ms) while the session runs. */
@@ -68,7 +74,14 @@ export async function runOnce(options: RunnerOptions): Promise<RunOutcome | null
   };
 
   const { systemPrompt, prompt } = promptsFor(run);
-  const session = spawn({ prompt, systemPrompt, cwd, extraArgs: options.extraArgs });
+  let mcp: McpSession | null = null;
+  if (options.mcp) {
+    mcp = writeMcpSession(
+      { token: options.mcp.token, apiUrl: options.mcp.apiUrl, runId: run.id, runnerId, command: options.mcp.command },
+      options.mcp.allowedTools,
+    );
+  }
+  const session = spawn({ prompt, systemPrompt, cwd, extraArgs: [...(options.extraArgs ?? []), ...(mcp?.args ?? [])] });
 
   const heartbeat = setInterval(() => {
     void client.agentRuns
@@ -98,6 +111,7 @@ export async function runOnce(options: RunnerOptions): Promise<RunOutcome | null
   } finally {
     clearInterval(heartbeat);
     clearInterval(flusher);
+    mcp?.cleanup();
   }
 
   await flush().catch((err: unknown) => log(`final append failed: ${err instanceof Error ? err.message : String(err)}`));
@@ -105,6 +119,18 @@ export async function runOnce(options: RunnerOptions): Promise<RunOutcome | null
   if (cancelled) return { runId: run.id, status: 'FAILED', eventsSent };
 
   const snap = parser.snapshot();
+  // The session ended the run itself through the MCP run tools: ask_owner
+  // parked it (the owner's reply resumes it as a new run), finish_run closed
+  // it with its own summary. A second finish would be a guarded no-op server
+  // side; skipping it keeps the transcript honest.
+  if (snap.askedOwner) {
+    log(`run ${run.id} is waiting on the owner (${eventsSent} events)`);
+    return { runId: run.id, status: 'WAITING_ON_OWNER', eventsSent };
+  }
+  if (snap.finishedViaTool) {
+    log(`run ${run.id} finished by the session (${eventsSent} events)`);
+    return { runId: run.id, status: 'SUCCEEDED', eventsSent };
+  }
   let outcome: FinishInput;
   if (spawnError) {
     outcome = { status: 'FAILED', error: spawnError };
