@@ -785,6 +785,20 @@ describe('D-number labels', () => {
   });
 });
 
+describe('decisions status --superseded-by', () => {
+  it('resolves a D-number for the successor too', async () => {
+    const { list, setStatus } = makeClient();
+    list.mockImplementation(async ({ number }: { number: number }) => [
+      makeRow(`cuid${number}`, { number }),
+    ]);
+    await run(['status', 'D-0006', '--status', 'SUPERSEDED', '--superseded-by', 'D-0009']);
+    expect(setStatus.mock.calls[0]?.[0]).toMatchObject({
+      decisionId: 'cuid6',
+      supersededById: 'cuid9',
+    });
+  });
+});
+
 describe('decisions set-status', () => {
   it('is an alias of status', async () => {
     const { setStatus } = makeClient();

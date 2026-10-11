@@ -869,7 +869,10 @@ export function createDecisionsCommand(): Command {
       '--status <status>',
       'OPEN, PROPOSED, ACCEPTED, SUPERSEDED or DEPRECATED',
     )
-    .option('--superseded-by <id>', 'The decision that replaced this one (with --status SUPERSEDED)')
+    .option(
+      '--superseded-by <id>',
+      'The decision that replaced this one, as a D-number or id (with --status SUPERSEDED)',
+    )
     .option('--workspace <slug|id>', 'Workspace (defaults to your default workspace)')
     .action(
       async (
@@ -898,7 +901,9 @@ export function createDecisionsCommand(): Command {
             workspaceId,
             decisionId: await resolveDecisionRef(client, workspaceId, ref),
             status,
-            supersededById: options.supersededBy,
+            supersededById: options.supersededBy
+              ? await resolveDecisionRef(client, workspaceId, options.supersededBy)
+              : undefined,
           });
           if (useJson) outputDecisionJson(decision);
           else {
