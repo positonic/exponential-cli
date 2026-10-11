@@ -1,9 +1,11 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import type {
+  Decision,
   DecisionCreateInput,
   DecisionDeciderInput,
   DecisionEvidenceTurn,
+  DecisionLink,
   DecisionListRow,
   DecisionSource,
   DecisionStatus,
@@ -158,6 +160,45 @@ function parseNullableInt(v: string | undefined): number | null | undefined {
   return n;
 }
 
+const DECISION_LABEL = /^D-(\d+)$/i;
+
+/**
+ * The id a command acts on: a positional `<id>` or the older `--id` flag.
+ * Both are accepted so `decisions confirm D-0006` and existing scripts using
+ * `--id` keep working; passing two different ids is a mistake, not a choice.
+ */
+export function pickDecisionRef(positional: string | undefined, flag: string | undefined): string {
+  if (positional && flag && positional !== flag) {
+    throw new Error(`Got two decisions ("${positional}" and --id "${flag}"). Pass one.`);
+  }
+  const ref = positional ?? flag;
+  if (!ref) throw new Error('Pass the decision: a D-number like D-0006, or its id.');
+  return ref;
+}
+
+/**
+ * A `D-0006` label becomes the decision's CUID; anything else is taken to be
+ * a CUID already. Labels resolve through `list`, which only returns
+ * CONFIRMED decisions, so a draft's label cannot be looked up yet. The
+ * error says so and points at the id, which `create --json` returns.
+ */
+export async function resolveDecisionRef(
+  client: ReturnType<typeof getClient>,
+  workspaceId: string,
+  ref: string,
+): Promise<string> {
+  const match = DECISION_LABEL.exec(ref.trim());
+  if (!match) return ref;
+  const number = Number.parseInt(match[1]!, 10);
+  const [row] = await client.decisions.list({ workspaceId, number, limit: 1 });
+  if (!row) {
+    throw new Error(
+      `${ref} is not in this workspace's decision log. Drafts are not listed until someone confirms them, so pass a draft's id instead (the "id" field from "decisions create --json").`,
+    );
+  }
+  return row.id;
+}
+
 /** One entry in a `--from-file` batch: the create input, in JSON. */
 interface BatchItem {
   statement?: unknown;
@@ -270,6 +311,80 @@ function batchDeciders(value: unknown, index: number): DecisionDeciderInput[] | 
   });
 }
 
+/**
+ * The create landed and the link did not. Said loudly, with the id, so a
+ * retry links the existing decision instead of logging a duplicate.
+ */
+function notLinkedMessage(decision: Decision, featureId: string, error: unknown): string {
+  const reason = error instanceof Error ? error.message : String(error);
+  return `Logged ${decision.label} (${decision.id}) but could not link it to feature ${featureId}: ${reason}. Link it with: exponential decisions link ${decision.id} --feature ${featureId}`;
+}
+
+/**
+ * `confirm` is registered twice — `decisions confirm` and the older
+ * `decisions draft confirm` — with one implementation.
+ *
+ * With `--status`, it confirms the draft and then sets the status, so
+ * "confirm as accepted" is one command. Confirming is idempotent server-side,
+ * so the same command works on a decision someone has already confirmed.
+ * The two writes are separate calls: if the second fails, the decision stays
+ * confirmed at its old status and the error says so.
+ */
+function addConfirmCommand(parent: Command): void {
+  parent
+    .command('confirm [id]')
+    .description(
+      'Publish a draft decision into the log, as the signed-in person. Takes a D-number (D-0006) or an id. --status ACCEPTED also accepts it. Agents cannot confirm: this needs a person\'s login.',
+    )
+    .option('--id <id>', 'Decision id (alternative to the positional <id>)')
+    .option('--status <status>', 'Then set this status: OPEN, PROPOSED, ACCEPTED or DEPRECATED')
+    .option('--workspace <slug|id>', 'Workspace (defaults to your default workspace)')
+    .action(
+      async (
+        idArg: string | undefined,
+        options: { id?: string; status?: string; workspace?: string },
+        cmd: Command,
+      ) => {
+        const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+        const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+        try {
+          const ref = pickDecisionRef(idArg, options.id);
+          const status = options.status ? parseStatus(options.status) : undefined;
+          if (status === 'SUPERSEDED') {
+            throw new Error(
+              'SUPERSEDED needs the decision that replaced this one. Confirm first, then run "decisions status <id> --status SUPERSEDED --superseded-by <id>".',
+            );
+          }
+          const client = getClient();
+          const workspaceId = await resolveWorkspaceId(client, options.workspace);
+          const decisionId = await resolveDecisionRef(client, workspaceId, ref);
+          let decision = await client.decisions.confirmDraft(workspaceId, decisionId);
+          if (status && decision.status !== status) {
+            try {
+              decision = await client.decisions.setStatus({
+                workspaceId,
+                decisionId: decision.id,
+                status,
+              });
+            } catch (error) {
+              const reason = error instanceof Error ? error.message : String(error);
+              throw new Error(
+                `Confirmed ${decision.label}, but it is still ${decision.status}: setting ${status} failed (${reason}). Retry with: exponential decisions status ${decision.id} --status ${status}`,
+              );
+            }
+          }
+          if (useJson) outputDecisionJson(decision);
+          else {
+            console.log(`\n✓ Confirmed${status ? ` as ${decision.status}` : ''}`);
+            outputDecisionPretty(decision);
+          }
+        } catch (error) {
+          handleError(error, useJson);
+        }
+      },
+    );
+}
+
 export function createDecisionsCommand(): Command {
   const decisions = new Command('decisions').description(
     [
@@ -279,6 +394,7 @@ export function createDecisionsCommand(): Command {
       '',
       'Statuses: OPEN (an open question) · PROPOSED · ACCEPTED · SUPERSEDED · DEPRECATED.',
       'SUPERSEDED and DEPRECATED are reached with "decisions status", never at creation.',
+      'Commands that take a decision accept its D-number (D-0006) or its id.',
     ].join('\n'),
   );
 
@@ -390,7 +506,9 @@ export function createDecisionsCommand(): Command {
 
   decisions
     .command('get <id>')
-    .description('Show one decision in full: body, evidence, deciders, chain and links')
+    .description(
+      'Show one decision in full: body, evidence, deciders, chain and links. Takes a D-number (D-0006) or an id.',
+    )
     .option('--workspace <slug|id>', 'Workspace (defaults to your default workspace)')
     .action(async (id: string, options: { workspace?: string }, cmd: Command) => {
       const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
@@ -398,7 +516,8 @@ export function createDecisionsCommand(): Command {
       try {
         const client = getClient();
         const workspaceId = await resolveWorkspaceId(client, options.workspace);
-        const decision = await client.decisions.get(workspaceId, id);
+        const decisionId = await resolveDecisionRef(client, workspaceId, id);
+        const decision = await client.decisions.get(workspaceId, decisionId);
         if (useJson) outputDecisionJson(decision);
         else outputDecisionPretty(decision);
       } catch (error) {
@@ -428,6 +547,10 @@ export function createDecisionsCommand(): Command {
     .option('--goal <id>', 'Link to a goal (integer id)')
     .option('--key-result <id>', 'Link to a key result CUID')
     .option('--occurrence <id>', 'Link to a ceremony occurrence CUID')
+    .option(
+      '--feature <id>',
+      'Also link it as "implemented by" this feature CUID, so it shows on the feature page',
+    )
     .option('--decided-at <iso>', 'When it was decided (e.g. 2026-09-10T14:00)')
     .option('--owner <userId>', 'Owner user ID')
     .option(
@@ -456,6 +579,7 @@ export function createDecisionsCommand(): Command {
           goal?: string;
           keyResult?: string;
           occurrence?: string;
+          feature?: string;
           decidedAt?: string;
           owner?: string;
           decider: DecisionDeciderInput[];
@@ -577,6 +701,20 @@ export function createDecisionsCommand(): Command {
                   );
                 }
                 const decision = await client.decisions.create(input);
+                if (options.feature) {
+                  try {
+                    await client.decisions.linkFeature(workspaceId, decision.id, options.feature);
+                  } catch (error) {
+                    results.push({
+                      index,
+                      success: false,
+                      decision,
+                      statement,
+                      error: notLinkedMessage(decision, options.feature, error),
+                    });
+                    continue;
+                  }
+                }
                 results.push({ index, success: true, decision, statement });
               } catch (error) {
                 results.push({
@@ -608,12 +746,25 @@ export function createDecisionsCommand(): Command {
             deciders: options.decider.length > 0 ? options.decider : undefined,
             evidence: evidenceRaw === undefined ? undefined : parseEvidence(evidenceRaw),
           });
-          if (useJson) outputDecisionJson(decision);
+          let featureLink: DecisionLink | undefined;
+          if (options.feature) {
+            try {
+              featureLink = await client.decisions.linkFeature(
+                workspaceId,
+                decision.id,
+                options.feature,
+              );
+            } catch (error) {
+              throw new Error(notLinkedMessage(decision, options.feature, error));
+            }
+          }
+          if (useJson) outputDecisionJson(decision, featureLink ? { featureLink } : {});
           else {
             console.log(
               `\n✓ ${decision.status === 'OPEN' ? 'Open question' : 'Decision'} logged`,
             );
             outputDecisionPretty(decision);
+            if (featureLink) console.log(chalk.gray(`  Linked to feature ${options.feature}`));
           }
         } catch (error) {
           handleError(error, useJson);
@@ -622,11 +773,11 @@ export function createDecisionsCommand(): Command {
     );
 
   decisions
-    .command('update')
+    .command('update [id]')
     .description(
-      'Update a decision\'s content and scope; only the fields you pass are written. Status changes go through "decisions status".',
+      'Update a decision\'s content and scope; only the fields you pass are written. Takes a D-number (D-0006) or an id. Status changes go through "decisions status".',
     )
-    .requiredOption('--id <id>', 'Decision CUID')
+    .option('--id <id>', 'Decision id (alternative to the positional <id>)')
     .option('--workspace <slug|id>', 'Workspace (defaults to your default workspace)')
     .option('-s, --statement <text>', 'New statement')
     .option('-b, --body <markdown>', 'New Markdown body (or "null" to clear)')
@@ -640,8 +791,9 @@ export function createDecisionsCommand(): Command {
     .option('--adr <id>', 'ADR document CUID (or "null" to detach)')
     .action(
       async (
+        idArg: string | undefined,
         options: {
-          id: string;
+          id?: string;
           workspace?: string;
           statement?: string;
           body?: string;
@@ -659,6 +811,7 @@ export function createDecisionsCommand(): Command {
         const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
         const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
         try {
+          const ref = pickDecisionRef(idArg, options.id);
           const body =
             options.body === 'null' ? null : readText(options.body, options.bodyFile);
           const patch = {
@@ -690,7 +843,7 @@ export function createDecisionsCommand(): Command {
                 : await resolveProductId(client, workspaceId, options.product);
           const decision = await client.decisions.update({
             workspaceId,
-            decisionId: options.id,
+            decisionId: await resolveDecisionRef(client, workspaceId, ref),
             ...patch,
             productId,
           });
@@ -706,11 +859,12 @@ export function createDecisionsCommand(): Command {
     );
 
   decisions
-    .command('status')
+    .command('status [id]')
+    .alias('set-status')
     .description(
-      'Move a decision through its lifecycle — including answering an open question by moving it from OPEN to ACCEPTED.',
+      'Move a confirmed decision through its lifecycle — including answering an open question by moving it from OPEN to ACCEPTED. Takes a D-number (D-0006) or an id. A draft has to be confirmed first: "decisions confirm <id> --status ACCEPTED" does both.',
     )
-    .requiredOption('--id <id>', 'Decision CUID')
+    .option('--id <id>', 'Decision id (alternative to the positional <id>)')
     .requiredOption(
       '--status <status>',
       'OPEN, PROPOSED, ACCEPTED, SUPERSEDED or DEPRECATED',
@@ -719,8 +873,9 @@ export function createDecisionsCommand(): Command {
     .option('--workspace <slug|id>', 'Workspace (defaults to your default workspace)')
     .action(
       async (
+        idArg: string | undefined,
         options: {
-          id: string;
+          id?: string;
           status: string;
           supersededBy?: string;
           workspace?: string;
@@ -730,6 +885,7 @@ export function createDecisionsCommand(): Command {
         const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
         const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
         try {
+          const ref = pickDecisionRef(idArg, options.id);
           const status = parseStatus(options.status);
           if (status === 'SUPERSEDED' && !options.supersededBy) {
             throw new Error(
@@ -740,7 +896,7 @@ export function createDecisionsCommand(): Command {
           const workspaceId = await resolveWorkspaceId(client, options.workspace);
           const decision = await client.decisions.setStatus({
             workspaceId,
-            decisionId: options.id,
+            decisionId: await resolveDecisionRef(client, workspaceId, ref),
             status,
             supersededById: options.supersededBy,
           });
@@ -756,20 +912,24 @@ export function createDecisionsCommand(): Command {
     );
 
   decisions
-    .command('link')
-    .description('Record what implements a decision: a ticket or a feature. Idempotent.')
-    .requiredOption('--id <id>', 'Decision CUID')
+    .command('link [id]')
+    .description(
+      'Record what implements a decision: a ticket or a feature. Takes a D-number (D-0006) or an id. Idempotent.',
+    )
+    .option('--id <id>', 'Decision id (alternative to the positional <id>)')
     .option('--ticket <id>', 'Ticket CUID')
     .option('--feature <id>', 'Feature CUID')
     .option('--workspace <slug|id>', 'Workspace (defaults to your default workspace)')
     .action(
       async (
-        options: { id: string; ticket?: string; feature?: string; workspace?: string },
+        idArg: string | undefined,
+        options: { id?: string; ticket?: string; feature?: string; workspace?: string },
         cmd: Command,
       ) => {
         const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
         const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
         try {
+          const ref = pickDecisionRef(idArg, options.id);
           if (!options.ticket && !options.feature) {
             throw new Error('Pass --ticket <id> or --feature <id>.');
           }
@@ -778,9 +938,10 @@ export function createDecisionsCommand(): Command {
           }
           const client = getClient();
           const workspaceId = await resolveWorkspaceId(client, options.workspace);
+          const decisionId = await resolveDecisionRef(client, workspaceId, ref);
           const link = options.ticket
-            ? await client.decisions.linkTicket(workspaceId, options.id, options.ticket)
-            : await client.decisions.linkFeature(workspaceId, options.id, options.feature!);
+            ? await client.decisions.linkTicket(workspaceId, decisionId, options.ticket)
+            : await client.decisions.linkFeature(workspaceId, decisionId, options.feature!);
           if (useJson) console.log(JSON.stringify(link, null, 2));
           else {
             console.log(`✓ Linked ${chalk.gray(`(link id ${link.id})`)}`);
@@ -857,69 +1018,72 @@ export function createDecisionsCommand(): Command {
       }
     });
 
-  drafts
-    .command('confirm')
-    .description('Publish a draft decision into the log')
-    .requiredOption('--id <id>', 'Decision CUID')
-    .option('--workspace <slug|id>', 'Workspace (defaults to your default workspace)')
-    .action(async (options: { id: string; workspace?: string }, cmd: Command) => {
-      const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
-      const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
-      try {
-        const client = getClient();
-        const workspaceId = await resolveWorkspaceId(client, options.workspace);
-        const decision = await client.decisions.confirmDraft(workspaceId, options.id);
-        if (useJson) outputDecisionJson(decision);
-        else {
-          console.log('\n✓ Draft confirmed');
-          outputDecisionPretty(decision);
-        }
-      } catch (error) {
-        handleError(error, useJson);
-      }
-    });
+  addConfirmCommand(decisions);
+  addConfirmCommand(drafts);
 
   drafts
-    .command('reject')
+    .command('reject [id]')
     .description(
       'Reject a draft. A confirmed decision is never rejected — deprecate or supersede it with "decisions status".',
     )
-    .requiredOption('--id <id>', 'Decision CUID')
+    .option('--id <id>', 'Decision id (alternative to the positional <id>)')
     .option('--workspace <slug|id>', 'Workspace (defaults to your default workspace)')
-    .action(async (options: { id: string; workspace?: string }, cmd: Command) => {
-      const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
-      const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
-      try {
-        const client = getClient();
-        const workspaceId = await resolveWorkspaceId(client, options.workspace);
-        const result = await client.decisions.rejectDraft(workspaceId, options.id);
-        if (useJson) console.log(JSON.stringify(result, null, 2));
-        else console.log('✓ Draft rejected');
-      } catch (error) {
-        handleError(error, useJson);
-      }
-    });
+    .action(
+      async (
+        idArg: string | undefined,
+        options: { id?: string; workspace?: string },
+        cmd: Command,
+      ) => {
+        const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+        const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+        try {
+          const client = getClient();
+          const workspaceId = await resolveWorkspaceId(client, options.workspace);
+          const decisionId = await resolveDecisionRef(
+            client,
+            workspaceId,
+            pickDecisionRef(idArg, options.id),
+          );
+          const result = await client.decisions.rejectDraft(workspaceId, decisionId);
+          if (useJson) console.log(JSON.stringify(result, null, 2));
+          else console.log('✓ Draft rejected');
+        } catch (error) {
+          handleError(error, useJson);
+        }
+      },
+    );
 
   drafts
-    .command('delete')
+    .command('delete [id]')
     .description(
       'Permanently delete a draft or rejected decision. Confirmed decisions are never deleted.',
     )
-    .requiredOption('--id <id>', 'Decision CUID')
+    .option('--id <id>', 'Decision id (alternative to the positional <id>)')
     .option('--workspace <slug|id>', 'Workspace (defaults to your default workspace)')
-    .action(async (options: { id: string; workspace?: string }, cmd: Command) => {
-      const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
-      const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
-      try {
-        const client = getClient();
-        const workspaceId = await resolveWorkspaceId(client, options.workspace);
-        const result = await client.decisions.deleteDraft(workspaceId, options.id);
-        if (useJson) console.log(JSON.stringify({ deleted: true, ...result }, null, 2));
-        else console.log('✓ Draft deleted');
-      } catch (error) {
-        handleError(error, useJson);
-      }
-    });
+    .action(
+      async (
+        idArg: string | undefined,
+        options: { id?: string; workspace?: string },
+        cmd: Command,
+      ) => {
+        const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+        const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+        try {
+          const client = getClient();
+          const workspaceId = await resolveWorkspaceId(client, options.workspace);
+          const decisionId = await resolveDecisionRef(
+            client,
+            workspaceId,
+            pickDecisionRef(idArg, options.id),
+          );
+          const result = await client.decisions.deleteDraft(workspaceId, decisionId);
+          if (useJson) console.log(JSON.stringify({ deleted: true, ...result }, null, 2));
+          else console.log('✓ Draft deleted');
+        } catch (error) {
+          handleError(error, useJson);
+        }
+      },
+    );
 
   decisions.addCommand(drafts);
 

@@ -224,7 +224,9 @@ exponential decisions list --workspace clear --number 3 --limit 20   # D-0003; c
 # Everything logged from one meeting — both panels (drafts too, if you can edit it)
 exponential decisions list --meeting <meeting-cuid>
 
-# One decision in full: body, evidence, deciders, chain and links
+# One decision in full: body, evidence, deciders, chain and links.
+# Anything that takes a decision accepts its D-number or its id.
+exponential decisions get D-0006
 exponential decisions get <cuid>
 
 # Log a decision from a meeting. Markdown bodies come from a file or stdin.
@@ -237,23 +239,32 @@ exponential decisions create -s "Ship the importer behind a flag" \
 exponential decisions create -s "Do we backfill historical rows?" \
   --status OPEN --meeting <meeting-cuid>
 
+# Log an open question on a feature: created and linked in one call
+exponential decisions create -s "Which store backs the cache?" \
+  --status OPEN --feature <feature-cuid> --body-file ./options.md --json
+
 # Bulk: a JSON array of decisions in one call — the flags become its defaults.
 # This is the path for filing everything that came out of one meeting.
 exponential decisions create --from-file ./decisions.json --meeting <meeting-cuid> --source AGENT
 jq '.decisions' notes.json | exponential decisions create --from-file - --meeting <meeting-cuid>
 
-# Answer an open question; supersede or deprecate a decision
-exponential decisions status --id <cuid> --status ACCEPTED
-exponential decisions status --id <cuid> --status SUPERSEDED --superseded-by <cuid>
+# Answer an open question; supersede or deprecate a decision (`set-status` is an alias)
+exponential decisions status D-0006 --status ACCEPTED
+exponential decisions status D-0006 --status SUPERSEDED --superseded-by <cuid>
 
 # Record what implements it (unlink takes the LINK id, from `decisions get`)
-exponential decisions link --id <cuid> --ticket <ticket-cuid>
+exponential decisions link D-0006 --ticket <ticket-cuid>
 exponential decisions unlink --link <link-cuid>
 
 # Let the server propose decisions from a meeting, then review them
 exponential decisions draft extract --meeting <meeting-cuid>
-exponential decisions draft confirm --id <cuid>
-exponential decisions draft reject --id <cuid>
+exponential decisions draft confirm <cuid>
+exponential decisions draft reject <cuid>
+
+# Confirm a draft and accept it in one command, as the signed-in person.
+# Agent keys can't confirm. Works on already-confirmed decisions too.
+# A draft's D-number can't be looked up until it's confirmed, so pass its id.
+exponential decisions confirm <cuid> --status ACCEPTED
 ```
 
 `--from-file` takes a JSON array (or `{"decisions": [...]}`), each entry a create

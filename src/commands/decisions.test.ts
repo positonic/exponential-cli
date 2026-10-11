@@ -7,6 +7,7 @@ import {
   parseDecider,
   parseEvidence,
   parseBatchFile,
+  pickDecisionRef,
 } from './decisions.js';
 import * as clientModule from '../client/index.js';
 import * as resolveModule from '../utils/resolve.js';
@@ -726,5 +727,190 @@ describe('parseBatchFile', () => {
 
   it('rejects a blank statement', () => {
     expect(() => parseBatchFile('[{"statement":"  "}]')).toThrow('statement');
+  });
+});
+
+describe('D-number labels', () => {
+  it('resolves D-0006 to its id through list --number', async () => {
+    const { list, get } = makeClient();
+    list.mockResolvedValue([makeRow('cuid6', { number: 6, label: 'D-0006' })]);
+    await run(['get', 'D-0006']);
+    expect(list).toHaveBeenCalledWith({ workspaceId: 'ws1', number: 6, limit: 1 });
+    expect(get).toHaveBeenCalledWith('ws1', 'cuid6');
+  });
+
+  it('accepts lower case and unpadded numbers', async () => {
+    const { list, get } = makeClient();
+    list.mockResolvedValue([makeRow('cuid12', { number: 12 })]);
+    await run(['get', 'd-12']);
+    expect(list).toHaveBeenCalledWith({ workspaceId: 'ws1', number: 12, limit: 1 });
+    expect(get).toHaveBeenCalledWith('ws1', 'cuid12');
+  });
+
+  it('passes an id straight through without a lookup', async () => {
+    const { list, get } = makeClient();
+    await run(['get', 'cmabc123']);
+    expect(list).not.toHaveBeenCalled();
+    expect(get).toHaveBeenCalledWith('ws1', 'cmabc123');
+  });
+
+  it('says drafts are not listed when the label is not found', async () => {
+    const { get } = makeClient();
+    await expect(run(['get', 'D-0099'])).rejects.toThrow('process.exit(1)');
+    expect(get).not.toHaveBeenCalled();
+    expect(loggedText()).toContain('Drafts are not listed');
+  });
+
+  it('resolves labels on update, status and link too', async () => {
+    const { list, update, setStatus, linkFeature } = makeClient();
+    list.mockResolvedValue([makeRow('cuid6', { number: 6 })]);
+    await run(['update', 'D-0006', '-s', 'Resolved']);
+    await run(['status', 'D-0006', '--status', 'DEPRECATED']);
+    await run(['link', 'D-0006', '--feature', 'f1']);
+    expect(update.mock.calls[0]?.[0]).toMatchObject({ decisionId: 'cuid6', statement: 'Resolved' });
+    expect(setStatus.mock.calls[0]?.[0]).toMatchObject({ decisionId: 'cuid6', status: 'DEPRECATED' });
+    expect(linkFeature).toHaveBeenCalledWith('ws1', 'cuid6', 'f1');
+  });
+
+  it('keeps the --id flag working', async () => {
+    const { update } = makeClient();
+    await run(['update', '--id', 'd1', '-s', 'Still works']);
+    expect(update.mock.calls[0]?.[0]).toMatchObject({ decisionId: 'd1' });
+  });
+
+  it('refuses two different ids', () => {
+    expect(() => pickDecisionRef('D-0001', 'd2')).toThrow('two decisions');
+    expect(pickDecisionRef('d2', 'd2')).toBe('d2');
+    expect(() => pickDecisionRef(undefined, undefined)).toThrow('D-number');
+  });
+});
+
+describe('decisions set-status', () => {
+  it('is an alias of status', async () => {
+    const { setStatus } = makeClient();
+    await run(['set-status', 'd1', '--status', 'accepted']);
+    expect(setStatus).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: 'ws1', decisionId: 'd1', status: 'ACCEPTED' }),
+    );
+  });
+});
+
+describe('decisions create --feature', () => {
+  it('links the new decision to the feature', async () => {
+    const { create, linkFeature } = makeClient();
+    create.mockResolvedValue(makeDecision('d7', { status: 'OPEN', label: 'D-0007' }));
+    await run(['create', '-s', 'Which store?', '--status', 'OPEN', '--feature', 'f1']);
+    expect(linkFeature).toHaveBeenCalledWith('ws1', 'd7', 'f1');
+    const payload = JSON.parse(loggedText()) as { id: string; featureLink: { id: string } };
+    expect(payload.id).toBe('d7');
+    expect(payload.featureLink.id).toBe('l2');
+  });
+
+  it('does not link without --feature', async () => {
+    const { linkFeature } = makeClient();
+    await run(['create', '-s', 'No feature']);
+    expect(linkFeature).not.toHaveBeenCalled();
+    expect(JSON.parse(loggedText())).not.toHaveProperty('featureLink');
+  });
+
+  it('names the logged decision when the link fails, so a retry does not duplicate it', async () => {
+    const { create, linkFeature } = makeClient();
+    create.mockResolvedValue(makeDecision('d7', { label: 'D-0007' }));
+    linkFeature.mockRejectedValue(new Error('Feature not found'));
+    await expect(run(['create', '-s', 'x', '--feature', 'nope'])).rejects.toThrow(
+      'process.exit(1)',
+    );
+    const text = loggedText();
+    expect(text).toContain('Logged D-0007 (d7)');
+    expect(text).toContain('exponential decisions link d7 --feature nope');
+  });
+
+  it('links every entry of a batch and fails just the entry whose link fails', async () => {
+    const { create, linkFeature } = makeClient();
+    create
+      .mockResolvedValueOnce(makeDecision('d1'))
+      .mockResolvedValueOnce(makeDecision('d2', { label: 'D-0002' }));
+    linkFeature.mockResolvedValueOnce({ id: 'l1' }).mockRejectedValueOnce(new Error('boom'));
+    const file = writeTemp('b.json', JSON.stringify([{ statement: 'A' }, { statement: 'B' }]));
+    await run(['create', '--from-file', file, '--feature', 'f1']);
+    expect(linkFeature).toHaveBeenNthCalledWith(1, 'ws1', 'd1', 'f1');
+    expect(linkFeature).toHaveBeenNthCalledWith(2, 'ws1', 'd2', 'f1');
+    expect(process.exitCode).toBe(1);
+    const payload = JSON.parse(loggedText()) as {
+      results: { success: boolean; error: string | null }[];
+    };
+    expect(payload.results[0]?.success).toBe(true);
+    expect(payload.results[1]?.success).toBe(false);
+    expect(payload.results[1]?.error).toContain('Logged D-0002 (d2)');
+  });
+});
+
+describe('decisions confirm', () => {
+  it('confirms a draft by label and accepts it in one command', async () => {
+    const { list, confirmDraft, setStatus } = makeClient();
+    list.mockResolvedValue([makeRow('d1', { number: 1 })]);
+    confirmDraft.mockResolvedValue(makeDecision('d1', { status: 'OPEN' }));
+    setStatus.mockResolvedValue(makeDecision('d1', { status: 'ACCEPTED' }));
+    await run(['confirm', 'D-0001', '--status', 'accepted']);
+    expect(confirmDraft).toHaveBeenCalledWith('ws1', 'd1');
+    expect(setStatus).toHaveBeenCalledWith({
+      workspaceId: 'ws1',
+      decisionId: 'd1',
+      status: 'ACCEPTED',
+    });
+    expect(JSON.parse(loggedText())).toMatchObject({ id: 'd1', status: 'ACCEPTED' });
+  });
+
+  it('skips the status write when the decision already has it', async () => {
+    const { confirmDraft, setStatus } = makeClient();
+    confirmDraft.mockResolvedValue(makeDecision('d1', { status: 'ACCEPTED' }));
+    await run(['confirm', 'd1', '--status', 'ACCEPTED']);
+    expect(setStatus).not.toHaveBeenCalled();
+  });
+
+  it('sets the status on the decision confirm returned (a resolution draft lands on its target)', async () => {
+    const { confirmDraft, setStatus } = makeClient();
+    confirmDraft.mockResolvedValue(makeDecision('target', { status: 'OPEN' }));
+    await run(['confirm', 'draft1', '--status', 'ACCEPTED']);
+    expect(setStatus.mock.calls[0]?.[0]).toMatchObject({ decisionId: 'target' });
+  });
+
+  it('only confirms without --status', async () => {
+    const { confirmDraft, setStatus } = makeClient();
+    await run(['confirm', 'd1']);
+    expect(confirmDraft).toHaveBeenCalledWith('ws1', 'd1');
+    expect(setStatus).not.toHaveBeenCalled();
+  });
+
+  it('refuses SUPERSEDED before writing anything', async () => {
+    const { confirmDraft } = makeClient();
+    await expect(run(['confirm', 'd1', '--status', 'SUPERSEDED'])).rejects.toThrow(
+      'process.exit(1)',
+    );
+    expect(confirmDraft).not.toHaveBeenCalled();
+  });
+
+  it('says the decision is confirmed when the status write fails', async () => {
+    const { confirmDraft, setStatus } = makeClient();
+    confirmDraft.mockResolvedValue(makeDecision('d1', { status: 'OPEN', label: 'D-0001' }));
+    setStatus.mockRejectedValue(new Error('nope'));
+    await expect(run(['confirm', 'd1', '--status', 'ACCEPTED'])).rejects.toThrow(
+      'process.exit(1)',
+    );
+    expect(loggedText()).toContain('Confirmed D-0001, but it is still OPEN');
+  });
+
+  it('still works as draft confirm --id', async () => {
+    const { confirmDraft } = makeClient();
+    await run(['draft', 'confirm', '--id', 'd1']);
+    expect(confirmDraft).toHaveBeenCalledWith('ws1', 'd1');
+  });
+
+  it('takes a positional id on draft reject and delete', async () => {
+    const { rejectDraft, deleteDraft } = makeClient();
+    await run(['draft', 'reject', 'd1']);
+    await run(['draft', 'delete', 'd2']);
+    expect(rejectDraft).toHaveBeenCalledWith('ws1', 'd1');
+    expect(deleteDraft).toHaveBeenCalledWith('ws1', 'd2');
   });
 });

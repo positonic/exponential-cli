@@ -1668,8 +1668,12 @@ function transformDecisionListRow(d: DecisionListRow): Record<string, unknown> {
   };
 }
 
-export function outputDecisionJson(decision: Decision): void {
-  console.log(JSON.stringify(transformDecision(decision), null, 2));
+/** `extra` rides alongside the decision's own fields, e.g. the feature link `create --feature` made. */
+export function outputDecisionJson(
+  decision: Decision,
+  extra: Record<string, unknown> = {},
+): void {
+  console.log(JSON.stringify({ ...transformDecision(decision), ...extra }, null, 2));
 }
 
 export function outputDecisionPretty(decision: Decision): void {
