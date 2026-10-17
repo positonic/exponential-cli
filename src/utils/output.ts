@@ -51,6 +51,7 @@ import type {
   WorkspaceOutput,
   WorkspacesListOutput,
 } from 'exponential-sdk';
+import { defaultPipelineId } from './pipelines.js';
 
 // Detect if output is being piped
 export function shouldUseJson(forceJson?: boolean, forcePretty?: boolean): boolean {
@@ -649,6 +650,37 @@ export function outputPipelinePretty(pipeline: Pipeline): void {
     const count = stage._count?.deals != null ? chalk.gray(` (${stage._count.deals} deals)`) : '';
     console.log(`  ${chalk.bold(stage.name)}${count} — ${chalk.gray(stage.type)}`);
   }
+  console.log();
+}
+
+export function outputPipelinesJson(pipelines: Pipeline[]): void {
+  const defaultId = defaultPipelineId(pipelines);
+  console.log(JSON.stringify({
+    pipelines: pipelines.map((p) => ({
+      id: p.id,
+      name: p.name,
+      status: p.status,
+      stageCount: p.pipelineStages.length,
+      isDefault: p.id === defaultId,
+    })),
+    total: pipelines.length,
+  }, null, 2));
+}
+
+export function outputPipelinesPretty(pipelines: Pipeline[]): void {
+  if (pipelines.length === 0) {
+    console.log(chalk.gray('No pipelines found in this workspace.'));
+    return;
+  }
+  console.log(chalk.bold(`\nPipelines (${pipelines.length})`));
+  console.log(chalk.gray('─'.repeat(50)));
+  const defaultId = defaultPipelineId(pipelines);
+  pipelines.forEach((p) => {
+    const stages = p.pipelineStages.length;
+    const marker = p.id === defaultId ? chalk.cyan(' [default]') : '';
+    console.log(`  ${chalk.bold(p.name)}${marker} — ${chalk.gray(p.status ?? 'no status')}, ${stages} ${stages === 1 ? 'stage' : 'stages'}`);
+    console.log(chalk.gray(`    ID: ${p.id}`));
+  });
   console.log();
 }
 

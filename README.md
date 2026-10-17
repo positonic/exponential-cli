@@ -345,6 +345,38 @@ exponential features stories update --id <story-cuid> --i-want "..." [--scope <s
 exponential features stories rm --id <story-cuid>
 ```
 
+### Deals and pipelines
+
+A workspace can hold several pipelines (Sales, Hiring, Grants…). Every board
+command takes `--pipeline <id|name>`; the id may be bare or the slug-prefixed
+form the web app puts in project URLs.
+
+```bash
+# Which pipelines does this workspace have? The default is the oldest one that is not retired.
+exponential deals pipelines --workspace syntrofi
+
+# Board, stages and deals of one pipeline
+exponential deals pipeline --workspace <workspace-id> --pipeline "Close 3 paying clients by Dec 2026"
+exponential deals stages   --workspace <workspace-id> --pipeline close_3-cmtv8ufge0001gu04f9dz1irm
+exponential deals list     --workspace <workspace-id> --pipeline cmtv8ufge0001gu04f9dz1irm
+
+# Create a deal; --stage is an id or name on THAT pipeline
+exponential deals create --workspace <workspace-id> --pipeline Sales --stage "Intro call" --title "Acme"
+
+# Create a pipeline (default stages: Lead, Qualified, Proposal, Negotiation, Won, Lost)
+exponential deals pipelines create --workspace syntrofi --name "Hiring"
+
+# Move a deal to another pipeline; --stage is an id or name on that pipeline
+exponential deals move --id <deal-id> --pipeline Hiring --stage Lead
+```
+
+Without `--pipeline`, `deals move` keeps the deal on its current pipeline, and
+the server rejects a stage that belongs to another pipeline.
+
+Without `--pipeline`, every command uses the workspace's default pipeline (the
+oldest one that is not retired), exactly as before, so existing scripts keep
+working unchanged.
+
 ### Workspaces
 
 ```bash
