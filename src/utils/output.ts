@@ -1434,11 +1434,14 @@ export function outputPageHistoryPretty(history: PageHistory): void {
   console.log(chalk.gray('─'.repeat(50)));
   for (const r of history.revisions) {
     const when = new Date(r.updatedAt).toISOString().replace('T', ' ').slice(0, 16);
+    const who =
+      r.kind === 'baseline' ? 'before history' : r.authorHidden ? 'a member' : r.author?.name ?? 'Unknown';
     console.log(
-      `  ${chalk.gray(when)}  ${chalk.bold(r.author?.name ?? 'Unknown')}  ${chalk.cyan(r.kind)}  v${r.docVersion}  ${chalk.gray(formatBytes(r.bodyBytes))}`,
+      `  ${chalk.gray(when)}  ${chalk.bold(who)}  ${chalk.cyan(r.kind)}  v${r.docVersion}  ${chalk.gray(formatBytes(r.bodyBytes))}`,
     );
     console.log(chalk.gray(`    ${r.id}  "${r.title}"`));
     if (r.note) console.log(`    ${r.note}`);
+    else if (r.kind === 'markdown' || r.kind === 'restore') console.log(chalk.gray('    (no reason given)'));
   }
   if (history.nextCursor) {
     console.log(chalk.gray(`\n  More: --cursor ${history.nextCursor}`));
@@ -1453,6 +1456,12 @@ export function outputPageDiffPretty(diff: PageDiff): void {
   if (diff.titleChanged) {
     console.log(chalk.red(`- title: ${diff.from.title}`));
     console.log(chalk.green(`+ title: ${diff.to.title}`));
+  }
+  if (diff.provenanceChanged) {
+    const prov = (s: PageDiff['from']) =>
+      `as of ${s.asOf ? formatDay(s.asOf) : '—'} · source ${s.source ?? '—'}`;
+    console.log(chalk.red(`- ${prov(diff.from)}`));
+    console.log(chalk.green(`+ ${prov(diff.to)}`));
   }
   if (!diff.unified) {
     console.log(chalk.gray('No changes to the body.'));
