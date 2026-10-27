@@ -1435,7 +1435,7 @@ export function outputPageHistoryPretty(history: PageHistory): void {
   for (const r of history.revisions) {
     const when = new Date(r.updatedAt).toISOString().replace('T', ' ').slice(0, 16);
     const who =
-      r.kind === 'baseline' ? 'before history' : r.authorHidden ? 'a member' : r.author?.name ?? 'Unknown';
+      r.kind === 'baseline' ? 'before history' : r.authorHidden ? 'a member' : r.author?.name ?? 'automated';
     console.log(
       `  ${chalk.gray(when)}  ${chalk.bold(who)}  ${chalk.cyan(r.kind)}  v${r.docVersion}  ${chalk.gray(formatBytes(r.bodyBytes))}`,
     );

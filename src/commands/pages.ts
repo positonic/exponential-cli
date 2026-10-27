@@ -41,7 +41,7 @@ export function createPagesCommand(): Command {
     .option('--workspace <slug|id>', 'Workspace (defaults to the configured default)')
     .option(
       '--search <text>',
-      'Substring match on title or body (case-insensitive). For search by meaning use "pages search".',
+      'Case-insensitive title match. To find pages by content or meaning use "pages search".',
     )
     .action(
       async (options: { workspace?: string; search?: string }, cmd: Command) => {
@@ -326,12 +326,30 @@ export function createPagesCommand(): Command {
     )
     .requiredOption('--revision <revisionId>', 'The revision to restore (see "pages history")')
     .option('-n, --note <text>', 'Why: recorded on the restore revision')
-    .action(async (id: string, options: { revision: string; note?: string }, cmd: Command) => {
+    .option(
+      '--base-version <n>',
+      'The page version you looked at (newest revision\'s v-number in "pages history"); a newer save makes this a CONFLICT. Defaults to the newest revision now.',
+    )
+    .action(
+      async (
+        id: string,
+        options: { revision: string; note?: string; baseVersion?: string },
+        cmd: Command,
+      ) => {
       const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
       const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
       try {
         const client = getClient();
-        const result = await client.pages.restore(id, options.revision, { note: options.note });
+        let baseVersion =
+          options.baseVersion === undefined ? undefined : Number(options.baseVersion);
+        if (baseVersion === undefined) {
+          const latest = await client.pages.history(id, { limit: 1 });
+          baseVersion = latest.revisions[0]?.docVersion;
+        }
+        const result = await client.pages.restore(id, options.revision, {
+          note: options.note,
+          baseVersion,
+        });
         if (useJson) console.log(JSON.stringify(result, null, 2));
         else {
           console.log(
@@ -341,7 +359,8 @@ export function createPagesCommand(): Command {
       } catch (error) {
         handleError(error, useJson);
       }
-    });
+      },
+    );
 
   pages.addCommand(createPageCommentsCommand());
 
