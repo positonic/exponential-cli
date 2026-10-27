@@ -20,6 +20,9 @@ import type {
   KeyResult,
   KeyResultCheckIn,
   KnowledgePage,
+  PageDiff,
+  PageHistory,
+  PageSearchOutput,
   Meeting,
   ObjectiveWithKeyResults,
   Organization,
@@ -1360,15 +1363,108 @@ export function outputPageJson(page: KnowledgePage): void {
   console.log(JSON.stringify(page, null, 2));
 }
 
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  return `${(bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0)} KB`;
+}
+
+function formatDay(value: Date | string): string {
+  return new Date(value).toISOString().slice(0, 10);
+}
+
 export function outputPagePretty(page: KnowledgePage): void {
   console.log(chalk.gray('─'.repeat(50)));
   console.log(`\n${chalk.bold(page.title)}`);
-  console.log(chalk.gray(`  ID: ${page.id}`));
+  console.log(chalk.gray(`  ID: ${page.id}  v${page.docVersion}`));
   if (page.project) {
     console.log(`  ${chalk.gray('Project:')} ${page.project.name}`);
   }
+  if (page.asOf || page.source) {
+    const parts = [];
+    if (page.asOf) parts.push(`As of ${formatDay(page.asOf)}`);
+    if (page.source) parts.push(`Source: ${page.source}`);
+    console.log(`  ${chalk.gray(parts.join(' · '))}`);
+  }
+  if (typeof page.bodyBytes === 'number') {
+    const scope = page.section ? ` (showing section "${page.section.text}")` : '';
+    console.log(chalk.gray(`  Body: ${formatBytes(page.bodyBytes)}${scope}`));
+  }
+  if (page.outline) {
+    console.log();
+    if (page.outline.length === 0) console.log(chalk.gray('  (no headings)'));
+    for (const h of page.outline) {
+      console.log(
+        `  ${'  '.repeat(h.level - 1)}${chalk.gray('#'.repeat(h.level))} ${h.text}  ${chalk.gray(`L${h.line + 1}`)}`,
+      );
+    }
+    console.log();
+    return;
+  }
   if (page.body) {
     console.log(`\n${page.body}\n`);
+  }
+}
+
+export function outputPageSearchPretty(result: PageSearchOutput): void {
+  if (result.results.length === 0) {
+    console.log(chalk.gray(`No pages about "${result.query}".`));
+    return;
+  }
+  console.log(chalk.bold(`\nPages about "${result.query}" (${result.results.length})`));
+  console.log(chalk.gray('─'.repeat(50)));
+  for (const r of result.results) {
+    const score =
+      r.similarity === null
+        ? chalk.gray('text match')
+        : chalk.gray(`${Math.round(r.similarity * 100)}%`);
+    console.log(`  ${chalk.bold(r.title)}  ${score}`);
+    console.log(chalk.gray(`    ID: ${r.id}  ${r.url}`));
+    if (r.snippet) console.log(`    ${r.snippet}`);
+  }
+  console.log();
+}
+
+export function outputPageHistoryPretty(history: PageHistory): void {
+  if (history.revisions.length === 0) {
+    console.log(chalk.gray('No revisions yet.'));
+    return;
+  }
+  const n = history.revisions.length;
+  console.log(chalk.bold(`\nHistory (${n} revision${n === 1 ? '' : 's'})`));
+  console.log(chalk.gray('─'.repeat(50)));
+  for (const r of history.revisions) {
+    const when = new Date(r.updatedAt).toISOString().replace('T', ' ').slice(0, 16);
+    console.log(
+      `  ${chalk.gray(when)}  ${chalk.bold(r.author?.name ?? 'Unknown')}  ${chalk.cyan(r.kind)}  v${r.docVersion}  ${chalk.gray(formatBytes(r.bodyBytes))}`,
+    );
+    console.log(chalk.gray(`    ${r.id}  "${r.title}"`));
+    if (r.note) console.log(`    ${r.note}`);
+  }
+  if (history.nextCursor) {
+    console.log(chalk.gray(`\n  More: --cursor ${history.nextCursor}`));
+  }
+  console.log();
+}
+
+export function outputPageDiffPretty(diff: PageDiff): void {
+  const side = (s: PageDiff['from']) =>
+    s.revisionId ? `${s.revisionId} (v${s.docVersion})` : s.createdAt ? 'current' : '(empty)';
+  console.log(chalk.gray(`${side(diff.from)} → ${side(diff.to)}`));
+  if (diff.titleChanged) {
+    console.log(chalk.red(`- title: ${diff.from.title}`));
+    console.log(chalk.green(`+ title: ${diff.to.title}`));
+  }
+  if (!diff.unified) {
+    console.log(chalk.gray('No changes to the body.'));
+    return;
+  }
+  console.log(chalk.gray(`+${diff.stats.added} −${diff.stats.removed}\n`));
+  for (const line of diff.unified.split('\n')) {
+    if (line.startsWith('+++') || line.startsWith('---') || line.startsWith('@@')) {
+      console.log(chalk.gray(line));
+    } else if (line.startsWith('+')) console.log(chalk.green(line));
+    else if (line.startsWith('-')) console.log(chalk.red(line));
+    else console.log(line);
   }
 }
 

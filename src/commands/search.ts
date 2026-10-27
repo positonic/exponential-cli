@@ -13,6 +13,22 @@ interface GlobalOptions {
 interface SearchOptions {
   workspace?: string;
   limit?: string;
+  semantic?: boolean;
+  types?: string;
+}
+
+const KNOWLEDGE_TYPES = ['transcription', 'resource', 'document', 'page'] as const;
+type KnowledgeType = (typeof KNOWLEDGE_TYPES)[number];
+
+function parseTypes(value: string | undefined): KnowledgeType[] | undefined {
+  if (!value) return undefined;
+  const types = value.split(',').map((t) => t.trim()).filter(Boolean);
+  for (const t of types) {
+    if (!(KNOWLEDGE_TYPES as readonly string[]).includes(t)) {
+      throw new Error(`Unknown source type "${t}". Use: ${KNOWLEDGE_TYPES.join(', ')}`);
+    }
+  }
+  return types as KnowledgeType[];
 }
 
 const TYPE_LABELS: Record<string, string> = {
@@ -35,11 +51,13 @@ const TYPE_LABELS: Record<string, string> = {
 export function createSearchCommand(): Command {
   const search = new Command('search')
     .description(
-      "Global search across projects, actions, goals, workspaces and more — same coverage as the app's Cmd+K palette",
+      "Global search across projects, actions, goals, workspaces and more — same coverage as the app's Cmd+K palette. Matches titles; add --semantic to search meetings, resources, documents and pages by meaning.",
     )
     .argument('<query>', 'Text to search for')
-    .option('-w, --workspace <slug>', 'Restrict results to one workspace (slug or ID)')
-    .option('-l, --limit <n>', 'Max results per entity type (1-25, default 10)')
+    .option('-w, --workspace <slug>', 'Restrict results to one workspace (slug or ID; required with --semantic)')
+    .option('-l, --limit <n>', 'Max results per entity type (1-25, default 10; 1-20 with --semantic)')
+    .option('--semantic', 'Search the Knowledge index by meaning instead of matching titles')
+    .option('--types <list>', 'With --semantic: comma-separated source kinds (transcription,resource,document,page)')
     .action(async (query: string, options: SearchOptions, cmd: Command) => {
       const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
       const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
@@ -65,6 +83,37 @@ export function createSearchCommand(): Command {
         }
 
         const limit = options.limit ? Number(options.limit) : undefined;
+
+        if (options.semantic) {
+          if (!workspaceId) {
+            throw new Error('--semantic searches one workspace at a time: pass --workspace <slug>.');
+          }
+          const knowledge = await client.search.knowledge({
+            query,
+            workspaceId,
+            limit,
+            sourceTypes: parseTypes(options.types),
+          });
+          if (useJson) {
+            console.log(JSON.stringify(knowledge, null, 2));
+            return;
+          }
+          if (knowledge.results.length === 0) {
+            console.log(chalk.gray(`Nothing about "${knowledge.query}" in the Knowledge index.`));
+            return;
+          }
+          console.log(chalk.bold(`\nAbout "${knowledge.query}"`));
+          for (const row of knowledge.results) {
+            console.log(
+              `  ${chalk.white(row.title)} ${chalk.gray(`· ${row.sourceType} · ${Math.round(row.similarity * 100)}%`)}`,
+            );
+            console.log(chalk.gray(`    ${row.sourceId}  ${row.url}`));
+            if (row.snippet) console.log(`    ${row.snippet}`);
+          }
+          console.log();
+          return;
+        }
+
         const result = await client.search.global({ query, workspaceId, limit });
 
         if (useJson) {

@@ -345,6 +345,35 @@ exponential features stories update --id <story-cuid> --i-want "..." [--scope <s
 exponential features stories rm --id <story-cuid>
 ```
 
+### Pages
+
+Knowledge pages (strategy, vision, PRDs, specs). Reads are Markdown-only by default (the
+editor's document is never sent) and every write lands in the page's history.
+
+```bash
+# Find pages by meaning (semantic hits first, then title/body text matches)
+exponential pages search "how we price enterprise" --workspace acme
+
+# Read a page: Markdown body only. --outline shows its headings; --section reads one part.
+exponential pages get <page-id>
+exponential pages get <page-id> --outline
+exponential pages get <page-id> --section "Goals"
+
+# Write with a reason, a base version (so a newer edit is a CONFLICT, not an overwrite),
+# and provenance: where the facts come from and when they were true
+exponential pages update --id <page-id> --body-file strategy.md --base-version 7 \
+  --note "Q4 pricing decided 2026-10-21" --source "https://…/board-deck" --as-of 2026-10-21
+
+# History: who changed what and why, the diff each revision made, and a way back
+exponential pages history <page-id>
+exponential pages diff <page-id>                      # latest revision vs the one before
+exponential pages diff <page-id> --revision <rev-id> --against current
+exponential pages restore <page-id> --revision <rev-id> --note "Undo the agent rewrite"
+```
+
+`exponential search "<text>" --semantic --workspace acme` runs the same search by meaning
+across meetings, resources, documents and pages (`--types page` to narrow).
+
 ### Workspaces
 
 ```bash
