@@ -239,13 +239,24 @@ exponential ceremonies occurrences my-update <occurrence> --answer "today=Review
 exponential ceremonies occurrences generate-agenda <occurrence> --circulate
 exponential ceremonies occurrences agenda add <occurrence> --section <key> --title "Pricing"
 exponential ceremonies occurrences agenda resolve <occurrence> <itemId>   # --reopen to undo
-exponential ceremonies occurrences skip <occurrence> --reason "Nothing to discuss"
+exponential ceremonies occurrences skip <occurrence> --reason "Nothing to discuss"   # a booked one-off: cancels its invites
 exponential ceremonies occurrences attach <occurrence> --meeting <meeting-cuid>
+
+# Off the cadence: add a meeting at another time, or move one that hasn't happened
+exponential ceremonies occurrences add --ceremony leadership-weekly --at 2026-11-04T10:00
+exponential ceremonies occurrences move <occurrence> --to 2026-11-05T10:00
+
+# A project's Meetings timeline (one-offs included)
+exponential ceremonies occurrences list --project <project-cuid>
+
+# Which ceremony meets in a video room, and the occurrence on now
+exponential ceremonies match-url https://talk.example.com/rooms/standup
 
 # Create / edit definitions. update only changes the flags you pass.
 exponential ceremonies create --template daily-standup --timezone Europe/Madrid --starts-on 2026-10-05 \
   --participant <userId> --participant <userId>
 exponential ceremonies update leadership-weekly --duration 45
+exponential ceremonies update leadership-weekly --meeting-url https://talk.example.com/rooms/lw --auto-extract-outputs
 exponential ceremonies update leadership-weekly --inactive
 exponential ceremonies import ceremonies.json --timezone Europe/Madrid   # upsert by slug
 exponential ceremonies backfill            # dry run; --apply attaches recordings by alias

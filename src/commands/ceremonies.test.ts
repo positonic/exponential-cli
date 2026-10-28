@@ -120,6 +120,21 @@ function makeClient() {
     }),
     attachMeeting: vi.fn().mockResolvedValue({ meetingId: 'm1', occurrenceId: OCCURRENCE_ID }),
     detachMeeting: vi.fn(),
+    addOccurrence: vi.fn().mockResolvedValue({
+      id: 'o2',
+      scheduledStart: new Date('2026-11-04T09:00:00Z'),
+      scheduledEnd: new Date('2026-11-04T10:00:00Z'),
+      cadenceStart: null,
+      status: 'PLANNED',
+    }),
+    rescheduleOccurrence: vi.fn().mockResolvedValue({
+      id: OCCURRENCE_ID,
+      scheduledStart: new Date('2026-10-03T13:30:00Z'),
+      scheduledEnd: new Date('2026-10-03T14:30:00Z'),
+      movedFrom: new Date('2026-10-02T13:30:00Z'),
+    }),
+    listOccurrencesForProject: vi.fn().mockResolvedValue([]),
+    matchMeetingUrl: vi.fn().mockResolvedValue(null),
   };
   const decisions = {
     list: vi.fn().mockResolvedValue([
@@ -369,5 +384,73 @@ describe('ceremonies writes', () => {
     expect(ceremonies.backfillAttachments).toHaveBeenLastCalledWith('ws1', { dryRun: true });
     await run(['backfill', '--apply']);
     expect(ceremonies.backfillAttachments).toHaveBeenLastCalledWith('ws1', { dryRun: false });
+  });
+});
+
+describe('scheduling and room links', () => {
+  it('occurrences add resolves the ceremony and sends the start', async () => {
+    const { ceremonies } = makeClient();
+    await run(['occurrences', 'add', '--ceremony', 'leadership-weekly', '--at', '2026-11-04T09:00Z']);
+    expect(ceremonies.addOccurrence).toHaveBeenCalledWith('ws1', CEREMONY_ID, new Date('2026-11-04T09:00:00Z'));
+  });
+
+  it('occurrences add refuses a bare date', async () => {
+    const { ceremonies } = makeClient();
+    await expect(
+      run(['occurrences', 'add', '--ceremony', CEREMONY_ID, '--at', '2026-11-04']),
+    ).rejects.toThrow('process.exit(1)');
+    expect(ceremonies.addOccurrence).not.toHaveBeenCalled();
+  });
+
+  it('occurrences move takes the occurrence URL', async () => {
+    const { ceremonies } = makeClient();
+    await run(['occurrences', 'move', URL, '--to', '2026-10-03T13:30Z']);
+    expect(resolveModule.resolveWorkspaceId).toHaveBeenCalledWith(expect.anything(), 'syntrofi');
+    expect(ceremonies.rescheduleOccurrence).toHaveBeenCalledWith(
+      'ws1',
+      OCCURRENCE_ID,
+      new Date('2026-10-03T13:30:00Z'),
+    );
+  });
+
+  it('occurrences list --project uses the project timeline, no workspace', async () => {
+    const { ceremonies } = makeClient();
+    await run(['occurrences', 'list', '--project', 'p1', '--per-ceremony', '3']);
+    expect(ceremonies.listOccurrencesForProject).toHaveBeenCalledWith({
+      projectId: 'p1',
+      from: undefined,
+      to: undefined,
+      perCeremony: 3,
+    });
+    expect(ceremonies.listOccurrences).not.toHaveBeenCalled();
+    expect(resolveModule.resolveWorkspaceId).not.toHaveBeenCalled();
+  });
+
+  it('update sends --meeting-url and --no-auto-extract-outputs', async () => {
+    const { ceremonies } = makeClient();
+    await run(['update', CEREMONY_ID, '--meeting-url', 'https://talk.example/rooms/lw', '--no-auto-extract-outputs']);
+    expect(ceremonies.update).toHaveBeenCalledWith({
+      workspaceId: 'ws1',
+      id: CEREMONY_ID,
+      meetingUrl: 'https://talk.example/rooms/lw',
+      autoExtractOutputs: false,
+    });
+  });
+
+  it('update without the auto-extract flags leaves it alone', async () => {
+    const { ceremonies } = makeClient();
+    await run(['update', CEREMONY_ID, '--duration', '30']);
+    expect(ceremonies.update.mock.calls[0]![0]).not.toHaveProperty('autoExtractOutputs');
+  });
+
+  it('match-url searches every workspace unless --workspace', async () => {
+    const { ceremonies } = makeClient();
+    await run(['match-url', 'https://talk.example/rooms/lw']);
+    expect(ceremonies.matchMeetingUrl).toHaveBeenCalledWith({
+      url: 'https://talk.example/rooms/lw',
+      at: undefined,
+      workspaceId: undefined,
+    });
+    expect(jsonOutput()).toEqual({ match: null });
   });
 });

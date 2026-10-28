@@ -13,6 +13,7 @@ import type {
   CeremonyTemplate,
   CeremonyUpdateSummary,
   CeremonyWriteResult,
+  ProjectOccurrenceRow,
   Contact,
   ContactInteraction,
   Deal,
@@ -2862,7 +2863,7 @@ export function outputCeremoniesPretty(ceremonies: CeremonySummary[]): void {
     console.log(chalk.gray(`    ID: ${c.id}`));
     console.log(
       chalk.gray(
-        `    ${c.cadenceRule} · ${c.timezone} · ${c.durationMinutes} min · owner ${c.owner?.name ?? c.ownerId} · ${c._count.participants} participants · ${c._count.occurrences} occurrences`,
+        `    ${c.cadenceRule ?? 'one-off'} · ${c.timezone} · ${c.durationMinutes} min · owner ${c.owner?.name ?? c.ownerId} · ${c._count.participants} participants · ${c._count.occurrences} occurrences`,
       ),
     );
   }
@@ -2878,7 +2879,11 @@ export function outputCeremonyPretty(c: Ceremony): void {
   const inactive = c.isActive ? '' : chalk.red(' [inactive]');
   console.log(`\n${chalk.bold(c.name)} ${chalk.cyan(`[${c.kind}]`)}${inactive}`);
   console.log(chalk.gray(`  ID: ${c.id} · slug: ${c.slug}`));
-  console.log(`  ${chalk.gray('Cadence:')} ${c.cadenceRule} (${c.timezone}), ${c.durationMinutes} min, agenda ${c.leadTimeHours}h ahead`);
+  console.log(
+    `  ${chalk.gray('Cadence:')} ${c.isOneOff ? 'one-off meeting' : c.cadenceRule ?? 'none'} (${c.timezone}), ${c.durationMinutes} min, agenda ${c.leadTimeHours}h ahead`,
+  );
+  if (c.meetingUrl) console.log(`  ${chalk.gray('Room:')} ${c.meetingUrl}`);
+  if (c.autoExtractOutputs) console.log(`  ${chalk.gray('Outputs:')} extracted automatically from recordings`);
   console.log(`  ${chalk.gray('Owner:')} ${c.owner?.name ?? c.owner?.email ?? c.ownerId}`);
   if (c.participants.length > 0) {
     console.log(`  ${chalk.gray('Participants:')} ${c.participants.map((p) => p.user.name ?? p.user.email ?? p.userId).join(', ')}`);
@@ -2907,8 +2912,14 @@ export function outputCeremonyPretty(c: Ceremony): void {
     console.log(`\n${chalk.bold('Occurrences')} ${chalk.gray('(newest first)')}`);
     for (const o of c.occurrences) {
       const color = getOccurrenceStatusColor(o.status);
+      const moved =
+        o.cadenceStart === null
+          ? chalk.gray(' · added off-cadence')
+          : new Date(o.cadenceStart).getTime() !== new Date(o.scheduledStart).getTime()
+            ? chalk.gray(` · moved from ${formatInZone(o.cadenceStart, c.timezone)}`)
+            : '';
       const recs = o.recordedMeetings.length > 0 ? chalk.gray(` · ${o.recordedMeetings.length} recording${o.recordedMeetings.length === 1 ? '' : 's'}`) : '';
-      console.log(`  ${formatInZone(o.scheduledStart, c.timezone)} ${chalk[color](`[${o.status}]`)}${recs}`);
+      console.log(`  ${formatInZone(o.scheduledStart, c.timezone)} ${chalk[color](`[${o.status}]`)}${moved}${recs}`);
       console.log(chalk.gray(`    ID: ${o.id}${o.skipReason ? ` · skipped: ${o.skipReason}` : ''}`));
     }
   }
@@ -3043,6 +3054,16 @@ export function outputOccurrencePretty(o: CeremonyOccurrence, extras: Occurrence
   console.log(`\n${chalk.bold(o.ceremony.name)} — ${formatInZone(o.scheduledStart, tz)} ${chalk[color](`[${o.status}]`)}`);
   console.log(chalk.gray(`  ID: ${o.id} · ceremony ${o.ceremonyId}`));
   console.log(`  ${chalk.gray('Owner:')} ${o.ceremony.owner?.name ?? o.ceremony.owner?.email ?? o.ceremony.ownerId}`);
+  if (o.isOneOff) console.log(`  ${chalk.gray('One-off meeting')}${o.purpose ? `: ${o.purpose}` : ''}`);
+  if (o.cadenceStart && new Date(o.cadenceStart).getTime() !== new Date(o.scheduledStart).getTime()) {
+    console.log(`  ${chalk.gray('Moved from:')} ${formatInZone(o.cadenceStart, tz)}`);
+  }
+  if (o.scheduledMeeting) {
+    const names = o.scheduledMeeting.attendees.map((a) => a.name ?? a.userId).filter(Boolean);
+    console.log(
+      `  ${chalk.gray('Booking:')} ${o.scheduledMeeting.status}${names.length > 0 ? ` · ${names.join(', ')}` : ''}`,
+    );
+  }
   if (o.skipReason) console.log(`  ${chalk.gray('Skipped:')} ${o.skipReason}`);
   if (o.agendaCirculatedAt) {
     console.log(`  ${chalk.gray('Agenda circulated:')} ${formatInZone(o.agendaCirculatedAt, tz)}`);
@@ -3074,5 +3095,23 @@ export function outputOccurrencePretty(o: CeremonyOccurrence, extras: Occurrence
     }
   }
   if (extras.updates) outputOccurrenceUpdatesPretty(extras.updates);
+  console.log();
+}
+
+export function outputProjectOccurrencesPretty(rows: ProjectOccurrenceRow[]): void {
+  if (rows.length === 0) {
+    console.log(chalk.gray('No meetings in this window.'));
+    return;
+  }
+  console.log(chalk.bold(`\nProject meetings (${rows.length})`));
+  console.log(chalk.gray('─'.repeat(50)));
+  for (const r of rows) {
+    const color = getOccurrenceStatusColor(r.status);
+    const label = r.status === 'SKIPPED' ? 'CANCELLED' : r.status;
+    const oneOff = r.isOneOff ? chalk.cyan(' [one-off]') : '';
+    console.log(`  ${formatInZone(r.scheduledStart)} ${chalk.bold(r.ceremonyName)}${oneOff} ${chalk[color](`[${label}]`)}`);
+    const meta = [`ID: ${r.occurrenceId}`, `${r.attendeeCount} attendee${r.attendeeCount === 1 ? '' : 's'}`, r.purpose].filter(Boolean);
+    console.log(chalk.gray(`    ${meta.join(' · ')}`));
+  }
   console.log();
 }
