@@ -108,3 +108,15 @@ describe('root --version does not shadow subcommand flags', () => {
     expect(PKG_VERSION).toBe(pkg.version);
   });
 });
+
+describe('command registration', () => {
+  it('registers the databases command group with its properties and rows subcommands', () => {
+    const program = buildProgram();
+    const databases = program.commands.find((c) => c.name() === 'databases');
+    expect(databases).toBeDefined();
+    const sub = databases!.commands.map((c) => c.name()).sort();
+    expect(sub).toEqual(['create', 'delete', 'get', 'list', 'properties', 'rows', 'update']);
+    const rows = databases!.commands.find((c) => c.name() === 'rows')!;
+    expect(rows.commands.map((c) => c.name()).sort()).toEqual(['add', 'delete', 'list', 'update']);
+  });
+});
