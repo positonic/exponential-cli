@@ -2745,6 +2745,10 @@ function hostnameOf(url: string | null): string | null {
   }
 }
 
+function formatResourceTags(tags: string[]): string {
+  return `Tags: ${tags.join(', ')}`;
+}
+
 function transformResource(r: Resource): Record<string, unknown> {
   return {
     id: r.id,
@@ -2770,6 +2774,7 @@ export function outputResourcePretty(resource: Resource): void {
   console.log(`  ${badge} ${chalk.bold(resource.title)}`);
   if (resource.url) console.log(chalk.gray(`    ${resource.url}`));
   if (resource.description) console.log(`    ${resource.description}`);
+  if (resource.tags?.length) console.log(chalk.cyan(`    ${formatResourceTags(resource.tags)}`));
   console.log(chalk.gray(`    ID: ${resource.id}`));
 }
 
@@ -2792,6 +2797,7 @@ export function outputResourcesPretty(resources: Resource[], status: string): vo
     const host = hostnameOf(r.url);
     console.log(`  ${chalk.bold(r.title)}${host ? chalk.gray(`  ${host}`) : ''}  ${chalk.gray(when.toLocaleDateString())}`);
     if (r.description) console.log(chalk.gray(`    ${r.description}`));
+    if (r.tags?.length) console.log(chalk.cyan(`    ${formatResourceTags(r.tags)}`));
     console.log(chalk.gray(`    ID: ${r.id}`));
   }
   console.log();
