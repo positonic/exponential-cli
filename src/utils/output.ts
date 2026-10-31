@@ -20,6 +20,10 @@ import type {
   KeyResult,
   KeyResultCheckIn,
   KnowledgePage,
+  Database,
+  DatabaseRow,
+  DatabaseRowsPage,
+  PropertyDef,
   PageDiff,
   PageHistory,
   PageSearchOutput,
@@ -53,6 +57,8 @@ import type {
   Workspace,
   WorkspaceOutput,
   WorkspacesListOutput,
+  CsvPreview,
+  CsvCellError,
 } from 'exponential-sdk';
 
 // Detect if output is being piped
@@ -2801,4 +2807,140 @@ export function outputResourcesPretty(resources: Resource[], status: string): vo
     console.log(chalk.gray(`    ID: ${r.id}`));
   }
   console.log();
+}
+
+// ── Databases (ADR-0078) ─────────────────────────────────────────────
+
+export function outputDatabaseJson(database: Database): void {
+  console.log(JSON.stringify(database, null, 2));
+}
+
+function describeProperty(p: PropertyDef): string {
+  const options = p.options?.length ? `  [${p.options.map((o) => o.name).join(', ')}]` : '';
+  return `  ${p.name}  ${chalk.gray(`${p.type}  ${p.id}`)}${chalk.gray(options)}`;
+}
+
+export function outputDatabasePretty(database: Database): void {
+  console.log(chalk.gray('─'.repeat(50)));
+  console.log(`\n${chalk.bold(database.name)}`);
+  console.log(chalk.gray(`  ID: ${database.id}`));
+  console.log(`  ${chalk.gray('Page:')} ${database.page.title} ${chalk.gray(database.page.id)}`);
+  const facts: string[] = [];
+  if (typeof database.rowCount === 'number') facts.push(`${database.rowCount} row${database.rowCount === 1 ? '' : 's'}`);
+  if (database.detachedAt) facts.push(`detached ${formatDate(new Date(database.detachedAt))} — block is out of the page`);
+  if (facts.length) console.log(chalk.gray(`  ${facts.join(' · ')}`));
+  console.log(`\n  ${chalk.gray('Properties')}`);
+  for (const p of database.properties) console.log(describeProperty(p));
+  const view = database.view;
+  const viewParts: string[] = [];
+  if (view.sort) viewParts.push(`sort ${view.sort.propertyId} ${view.sort.direction}`);
+  if (view.filters.length) viewParts.push(`${view.filters.length} filter${view.filters.length === 1 ? '' : 's'}`);
+  if (view.hiddenPropertyIds.length) viewParts.push(`${view.hiddenPropertyIds.length} hidden`);
+  if (viewParts.length) console.log(chalk.gray(`\n  View: ${viewParts.join(' · ')}`));
+  console.log();
+}
+
+export function outputDatabasesPretty(databases: Database[]): void {
+  if (databases.length === 0) {
+    console.log(chalk.gray('No databases on this page.'));
+    return;
+  }
+  console.log(chalk.bold(`\nDatabases (${databases.length})`));
+  console.log(chalk.gray('─'.repeat(50)));
+  for (const d of databases) {
+    const state = d.detachedAt ? chalk.yellow('  detached') : '';
+    const rows = typeof d.rowCount === 'number' ? chalk.gray(`  ${d.rowCount} rows`) : '';
+    console.log(`  ${d.name}  ${chalk.gray(d.id)}${rows}${state}`);
+  }
+  console.log();
+}
+
+/** A stored value as text: select ids become option names, lists join, dates stay ISO. */
+function formatCell(def: PropertyDef | undefined, value: unknown): string {
+  if (value === null || value === undefined || value === '') return chalk.gray('—');
+  if (Array.isArray(value)) {
+    if (value.length === 0) return chalk.gray('—');
+    return value.map((v) => formatCell(def, v)).join(', ');
+  }
+  if (def?.options) {
+    return def.options.find((o) => o.id === value)?.name ?? String(value);
+  }
+  if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+  return String(value);
+}
+
+export function outputRowJson(row: DatabaseRow): void {
+  console.log(JSON.stringify(row, null, 2));
+}
+
+export function outputRowPretty(row: DatabaseRow, database?: Database): void {
+  console.log(`\n${chalk.bold(row.title || 'Untitled')}  ${chalk.gray(row.id)}`);
+  const defs = database?.properties.filter((p) => p.type !== 'title') ?? [];
+  if (defs.length) {
+    for (const def of defs) {
+      console.log(`  ${chalk.gray(`${def.name}:`)} ${formatCell(def, row.values[def.id])}`);
+    }
+  } else {
+    for (const [key, value] of Object.entries(row.values)) {
+      console.log(`  ${chalk.gray(`${key}:`)} ${formatCell(undefined, value)}`);
+    }
+  }
+  console.log(chalk.gray(`  Read the page: exponential pages get ${row.id}`));
+  console.log();
+}
+
+export function outputRowsPretty(page: DatabaseRowsPage, database: Database): void {
+  if (page.rows.length === 0) {
+    console.log(chalk.gray(`No rows in ${database.name}.`));
+    return;
+  }
+  const byId = new Map(database.properties.map((p) => [p.id, p]));
+  const columns = page.columns
+    .map((id) => byId.get(id))
+    .filter((p): p is PropertyDef => !!p && p.type !== 'title');
+  console.log(chalk.bold(`\n${database.name} (${page.rows.length} row${page.rows.length === 1 ? '' : 's'}${page.nextCursor ? ', more' : ''})`));
+  console.log(chalk.gray('─'.repeat(50)));
+  for (const row of page.rows) {
+    const cells = columns.map((c) => `${chalk.gray(`${c.name}:`)} ${formatCell(c, row.values[c.id])}`);
+    console.log(`  ${chalk.bold(row.title || 'Untitled')}  ${chalk.gray(row.id)}`);
+    if (cells.length) console.log(`    ${cells.join('   ')}`);
+  }
+  if (page.nextCursor) console.log(chalk.gray(`\n  More: --cursor ${page.nextCursor}`));
+  console.log();
+}
+
+/** Rows a CSV import left out, each with the cells that did not fit. */
+export function outputCsvSkipped(skipped: { index: number; errors: CsvCellError[] }[]): void {
+  if (skipped.length === 0) return;
+  console.log(chalk.yellow(`\n  ${skipped.length} row${skipped.length === 1 ? '' : 's'} not imported:`));
+  for (const row of skipped) {
+    const why = row.errors.map((e) => `${e.propertyName} ${e.reason}`).join('; ');
+    console.log(`    row ${row.index + 1}: ${why}`);
+  }
+}
+
+/** A CSV preview (`rows import --dry-run`): the mapping, then each row's fate. */
+export function outputCsvPreviewPretty(preview: CsvPreview): void {
+  console.log(chalk.bold(`\nCSV preview: ${preview.importable} of ${preview.total} row${preview.total === 1 ? '' : 's'} would be created`));
+  console.log(chalk.gray('─'.repeat(50)));
+  for (const column of preview.columns) {
+    const to =
+      column.target.kind === 'skip'
+        ? chalk.gray('skipped')
+        : column.target.kind === 'new'
+          ? `${chalk.green('new')} ${column.propertyName} (${column.type})`
+          : `${column.propertyName} (${column.type})`;
+    console.log(`  ${chalk.gray(`${column.header} →`)} ${to}`);
+  }
+  const newOptions = Object.entries(preview.newOptions ?? {});
+  if (newOptions.length) {
+    console.log(chalk.green('\n  Options the import will add:'));
+    for (const [columnId, names] of newOptions) {
+      const column = preview.columns.find((c) => (c.target.kind === 'property' ? c.target.propertyId : `new:${c.propertyName ?? ''}`) === columnId);
+      console.log(`    ${column?.propertyName ?? columnId}: ${names.join(', ')}`);
+    }
+  }
+  const skipped = preview.rows.filter((r) => r.errors.length > 0).map((r) => ({ index: r.index, errors: r.errors }));
+  outputCsvSkipped(skipped);
+  console.log(chalk.gray('\n  Nothing was created. Run again without --dry-run to import.'));
 }
