@@ -116,11 +116,13 @@ export function parseFilter(expression: string): { property: string; op: Databas
     case '~':
       return { property, op: 'contains', value };
     case '>':
-    case '>=':
       return { property, op: 'gt', value };
     case '<':
-    case '<=':
       return { property, op: 'lt', value };
+    case '>=':
+    case '<=':
+      // The server has only strict comparisons; narrowing silently would drop the boundary rows.
+      throw new Error(`--filter does not support "${operator.trim()}" (only > and <), got "${expression}"`);
     case 'in':
       return { property, op: 'anyOf', value: value.split(',').map((s) => s.trim()).filter(Boolean) };
     default:
@@ -154,9 +156,10 @@ export function resolveProperty(database: Database, key: string): PropertyDef {
 
 /**
  * Build the view a `rows list` with `--filter`/`--sort` reads through: the
- * saved view's hidden columns and order, with the given filters and sort in
- * place of the saved ones. Names are resolved to ids here because the server
- * requires a view to name properties by id.
+ * saved view, with the given filters in place of the saved ones when any
+ * were passed, and the given sort in place of the saved one when passed —
+ * so `--sort` alone keeps the saved filters. Names are resolved to ids here
+ * because the server requires a view to name properties by id.
  */
 export function buildListView(
   database: Database,
@@ -170,10 +173,13 @@ export function buildListView(
     sort: parsedSort
       ? { propertyId: resolveProperty(database, parsedSort.property).id, direction: parsedSort.direction }
       : database.view.sort,
-    filters: filters.map((expression) => {
-      const { property, op, value } = parseFilter(expression);
-      return { propertyId: resolveProperty(database, property).id, op, ...(value !== undefined ? { value } : {}) };
-    }),
+    filters:
+      filters.length === 0
+        ? database.view.filters
+        : filters.map((expression) => {
+            const { property, op, value } = parseFilter(expression);
+            return { propertyId: resolveProperty(database, property).id, op, ...(value !== undefined ? { value } : {}) };
+          }),
   };
 }
 

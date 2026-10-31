@@ -118,6 +118,8 @@ describe('parsing helpers', () => {
     expect(parseFilter('Name~latency')).toEqual({ property: 'Name', op: 'contains', value: 'latency' });
     expect(parseFilter('Score>5')).toEqual({ property: 'Score', op: 'gt', value: '5' });
     expect(parseFilter('Score<5')).toEqual({ property: 'Score', op: 'lt', value: '5' });
+    expect(() => parseFilter('Score>=5')).toThrow(/does not support ">="/);
+    expect(() => parseFilter('Score<=5')).toThrow(/does not support "<="/);
     expect(parseFilter('Owner=')).toEqual({ property: 'Owner', op: 'isEmpty' });
     expect(parseFilter('Owner!=')).toEqual({ property: 'Owner', op: 'isNotEmpty' });
     expect(parseFilter('Status in Tracked, Instrumenting')).toEqual({
@@ -144,6 +146,13 @@ describe('parsing helpers', () => {
   it('buildListView keeps the saved view and swaps in resolved filters and sort', () => {
     const db = makeDatabase({ view: { filters: [{ propertyId: SCORE, op: 'gt', value: 1 }], hiddenPropertyIds: [SCORE], propertyOrder: [] } });
     expect(buildListView(db, [], undefined)).toBeUndefined();
+    // --sort alone keeps the saved filters.
+    expect(buildListView(db, [], 'Score')).toEqual({
+      sort: { propertyId: SCORE, direction: 'asc' },
+      filters: [{ propertyId: SCORE, op: 'gt', value: 1 }],
+      hiddenPropertyIds: [SCORE],
+      propertyOrder: [],
+    });
     expect(buildListView(db, ['Status=Tracked', 'Score>5'], 'score:desc')).toEqual({
       sort: { propertyId: SCORE, direction: 'desc' },
       filters: [
