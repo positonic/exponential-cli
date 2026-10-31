@@ -50,12 +50,16 @@ export function handleError(error: unknown, json: boolean = false): never {
         break;
     }
 
+    // A database write refused by the property registry names the property
+    // (ADR-0078); pass it through so a caller can point at the cell.
+    const property = (error.data as { property?: unknown } | undefined)?.property;
     if (json) {
       console.log(JSON.stringify({
         error: {
           code,
           message,
           suggestion,
+          ...(property ? { property } : {}),
         },
       }, null, 2));
     } else {
