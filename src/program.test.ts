@@ -117,6 +117,6 @@ describe('command registration', () => {
     const sub = databases!.commands.map((c) => c.name()).sort();
     expect(sub).toEqual(['create', 'delete', 'get', 'list', 'properties', 'rows', 'update']);
     const rows = databases!.commands.find((c) => c.name() === 'rows')!;
-    expect(rows.commands.map((c) => c.name()).sort()).toEqual(['add', 'delete', 'list', 'update']);
+    expect(rows.commands.map((c) => c.name()).sort()).toEqual(['add', 'delete', 'import', 'list', 'update']);
   });
 });

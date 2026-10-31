@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   buildListView,
   createDatabasesCommand,
+  parseCsvMapping,
   parseFilter,
   parseOptions,
   parsePropertyType,
@@ -10,6 +11,9 @@ import {
   resolveProperty,
 } from './databases.js';
 import * as clientModule from '../client/index.js';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { Database } from 'exponential-sdk';
 
 vi.mock('../client/index.js', () => ({
@@ -58,6 +62,8 @@ function makeClient() {
   const databases = {
     create: vi.fn().mockResolvedValue(database),
     get: vi.fn().mockResolvedValue(database),
+    previewCsv: vi.fn().mockResolvedValue({ headers: ['Name', 'Score'], mapping: { Name: { kind: 'property', propertyId: TITLE }, Score: { kind: 'property', propertyId: SCORE } }, columns: [], rows: [], total: 2, importable: 2 }),
+    commitCsv: vi.fn().mockResolvedValue({ created: ['r1', 'r2'], skipped: [], properties: [], total: 2 }),
     list: vi.fn().mockResolvedValue([database]),
     update: vi.fn().mockResolvedValue(database),
     delete: vi.fn().mockResolvedValue({ id: 'db1', rowCount: 1 }),
@@ -224,6 +230,42 @@ describe('databases commands', () => {
     const { databases } = makeClient();
     await run(['rows', 'add', 'db1', '--set', 'Name=Alert latency', '--set', 'Status=Tracked', '-n', 'From CLEAR']);
     expect(databases.createRow).toHaveBeenCalledWith('db1', { Name: 'Alert latency', Status: 'Tracked' }, { note: 'From CLEAR' });
+  });
+
+  it('rows import reads the file, merges the server suggestion with --map/--new/--skip, previews with the full mapping and commits it', async () => {
+    const { databases } = makeClient();
+    const file = join(mkdtempSync(join(tmpdir(), 'csv-')), 'metrics.csv');
+    writeFileSync(file, 'Name,Score,Owner\nUptime,99,Ana\n');
+    await run(['rows', 'import', 'db1', '--csv', file, '--new', 'Owner=text', '-n', 'Q3 sheet']);
+    const mapping = {
+      Name: { kind: 'property', propertyId: TITLE },
+      Score: { kind: 'property', propertyId: SCORE },
+      Owner: { kind: 'new', name: 'Owner', type: 'text' },
+    };
+    expect(databases.previewCsv).toHaveBeenNthCalledWith(1, 'db1', 'Name,Score,Owner\nUptime,99,Ana\n');
+    expect(databases.previewCsv).toHaveBeenNthCalledWith(2, 'db1', 'Name,Score,Owner\nUptime,99,Ana\n', mapping);
+    expect(databases.commitCsv).toHaveBeenCalledWith('db1', 'Name,Score,Owner\nUptime,99,Ana\n', mapping, { note: 'Q3 sheet' });
+  });
+
+  it('rows import --dry-run previews and creates nothing', async () => {
+    const { databases } = makeClient();
+    const file = join(mkdtempSync(join(tmpdir(), 'csv-')), 'metrics.csv');
+    writeFileSync(file, 'Name\nUptime\n');
+    await run(['rows', 'import', 'db1', '--csv', file, '--dry-run']);
+    expect(databases.previewCsv).toHaveBeenCalledTimes(1);
+    expect(databases.commitCsv).not.toHaveBeenCalled();
+  });
+
+  it('parseCsvMapping resolves --map by property name, names --new columns, and skips', () => {
+    const database = makeDatabase();
+    expect(parseCsvMapping(database, { map: ['Metric=name'], new: ['Owner=text', 'Due=Due date:date'], skip: ['Notes'] })).toEqual({
+      Metric: { kind: 'property', propertyId: TITLE },
+      Owner: { kind: 'new', name: 'Owner', type: 'text' },
+      Due: { kind: 'new', name: 'Due date', type: 'date' },
+      Notes: { kind: 'skip' },
+    });
+    expect(() => parseCsvMapping(database, { map: ['Metric'], new: [], skip: [] })).toThrow(/Column=value/);
+    expect(() => parseCsvMapping(database, { map: [], new: ['Owner=relation'], skip: [] })).toThrow(/--type must be/);
   });
 
   it('rows update sends --set and --clear, and refuses an empty write', async () => {

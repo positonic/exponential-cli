@@ -7,12 +7,15 @@ import type {
   DatabaseView,
   PropertyDef,
   SelectOptionInput,
+  CsvMapping,
 } from 'exponential-sdk';
 import { getClient } from '../client/index.js';
 import { handleError } from '../utils/errors.js';
 import { readText } from '../utils/input.js';
 import {
   shouldUseJson,
+  outputCsvPreviewPretty,
+  outputCsvSkipped,
   outputDatabaseJson,
   outputDatabasePretty,
   outputDatabasesPretty,
@@ -72,6 +75,38 @@ export function parseSet(pairs: string[], cleared: string[] = []): Record<string
   }
   for (const key of cleared) values[key.trim()] = null;
   return values;
+}
+
+/**
+ * `rows import` flags → a CSV mapping. `--map "Col=Property"` sends a column
+ * to an existing property (by name or id, resolved against the database);
+ * `--new "Col=type"` creates a property named after the column (`--new
+ * "Col=Owner:text"` names it); `--skip Col` leaves one out. Columns not
+ * named are left to the server's suggestion, which the preview reports.
+ */
+export function parseCsvMapping(
+  database: Database,
+  flags: { map: string[]; new: string[]; skip: string[] },
+): CsvMapping {
+  const mapping: CsvMapping = {};
+  const split = (pair: string, flag: string): [string, string] => {
+    const at = pair.indexOf('=');
+    if (at <= 0) throw new Error(`${flag} expects Column=value, got "${pair}"`);
+    return [pair.slice(0, at).trim(), pair.slice(at + 1).trim()];
+  };
+  for (const pair of flags.map) {
+    const [column, property] = split(pair, '--map');
+    mapping[column] = { kind: 'property', propertyId: resolveProperty(database, property).id };
+  }
+  for (const pair of flags.new) {
+    const [column, spec] = split(pair, '--new');
+    const colon = spec.indexOf(':');
+    const name = colon > 0 ? spec.slice(0, colon).trim() : column;
+    const type = colon > 0 ? spec.slice(colon + 1).trim() : spec;
+    mapping[column] = { kind: 'new', name, type: parsePropertyType(type) };
+  }
+  for (const column of flags.skip) mapping[column.trim()] = { kind: 'skip' };
+  return mapping;
 }
 
 /** `--type <t>` → an addable property type, or a clear error naming them. */
@@ -489,6 +524,55 @@ function createRowsCommand(): Command {
         handleError(error, useJson);
       }
     });
+
+  rows
+    .command('import <databaseId>')
+    .description(
+      'Import a CSV: --csv file (or - for stdin). Columns map to properties by header name; --map "Col=Property", --new "Col=type" (or "Col=Name:type") and --skip Col override. --dry-run shows the typed preview and creates nothing. Rows with a cell that does not fit are reported and left out.',
+    )
+    .requiredOption('--csv <file>', 'The CSV file, or - for stdin')
+    .option('--map <Col=Property>', 'Send a column to an existing property (repeatable)', collect, [])
+    .option('--new <Col=type>', 'Create a property for a column (repeatable)', collect, [])
+    .option('--skip <Col>', 'Leave a column out (repeatable)', collect, [])
+    .option('--dry-run', 'Preview only: type every row, create nothing')
+    .option('-n, --note <text>', 'Why: recorded on each new row\'s first revision')
+    .action(
+      async (
+        databaseId: string,
+        options: { csv: string; map: string[]; new: string[]; skip: string[]; dryRun?: boolean; note?: string },
+        cmd: Command,
+      ) => {
+        const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+        const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+        try {
+          const csv = readText(undefined, options.csv);
+          if (!csv?.trim()) throw new Error('The CSV is empty');
+          const client = getClient();
+          const database = await client.databases.get(databaseId);
+          const overrides = parseCsvMapping(database, options);
+          // The server suggests the rest of the mapping by header name; take
+          // its full mapping so the commit uses exactly what was previewed.
+          const suggested = await client.databases.previewCsv(databaseId, csv);
+          const mapping = { ...suggested.mapping, ...overrides };
+          const preview =
+            Object.keys(overrides).length > 0 ? await client.databases.previewCsv(databaseId, csv, mapping) : suggested;
+          if (options.dryRun) {
+            if (useJson) console.log(JSON.stringify(preview, null, 2));
+            else outputCsvPreviewPretty(preview);
+            return;
+          }
+          const result = await client.databases.commitCsv(databaseId, csv, mapping, { note: options.note });
+          if (useJson) console.log(JSON.stringify(result, null, 2));
+          else {
+            console.log(`\n✓ Imported ${result.created.length} of ${result.total} row${result.total === 1 ? '' : 's'}`);
+            for (const p of result.properties) console.log(`  + property ${p.name} (${p.type})`);
+            outputCsvSkipped(result.skipped);
+          }
+        } catch (error) {
+          handleError(error, useJson);
+        }
+      },
+    );
 
   rows
     .command('update <rowId>')

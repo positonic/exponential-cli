@@ -57,6 +57,8 @@ import type {
   Workspace,
   WorkspaceOutput,
   WorkspacesListOutput,
+  CsvPreview,
+  CsvCellError,
 } from 'exponential-sdk';
 
 // Detect if output is being piped
@@ -2905,4 +2907,32 @@ export function outputRowsPretty(page: DatabaseRowsPage, database: Database): vo
   }
   if (page.nextCursor) console.log(chalk.gray(`\n  More: --cursor ${page.nextCursor}`));
   console.log();
+}
+
+/** Rows a CSV import left out, each with the cells that did not fit. */
+export function outputCsvSkipped(skipped: { index: number; errors: CsvCellError[] }[]): void {
+  if (skipped.length === 0) return;
+  console.log(chalk.yellow(`\n  ${skipped.length} row${skipped.length === 1 ? '' : 's'} not imported:`));
+  for (const row of skipped) {
+    const why = row.errors.map((e) => `${e.propertyName} ${e.reason}`).join('; ');
+    console.log(`    row ${row.index + 1}: ${why}`);
+  }
+}
+
+/** A CSV preview (`rows import --dry-run`): the mapping, then each row's fate. */
+export function outputCsvPreviewPretty(preview: CsvPreview): void {
+  console.log(chalk.bold(`\nCSV preview: ${preview.importable} of ${preview.total} row${preview.total === 1 ? '' : 's'} would be created`));
+  console.log(chalk.gray('─'.repeat(50)));
+  for (const column of preview.columns) {
+    const to =
+      column.target.kind === 'skip'
+        ? chalk.gray('skipped')
+        : column.target.kind === 'new'
+          ? `${chalk.green('new')} ${column.propertyName} (${column.type})`
+          : `${column.propertyName} (${column.type})`;
+    console.log(`  ${chalk.gray(`${column.header} →`)} ${to}`);
+  }
+  const skipped = preview.rows.filter((r) => r.errors.length > 0).map((r) => ({ index: r.index, errors: r.errors }));
+  outputCsvSkipped(skipped);
+  console.log(chalk.gray('\n  Nothing was created. Run again without --dry-run to import.'));
 }
