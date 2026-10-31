@@ -2932,6 +2932,14 @@ export function outputCsvPreviewPretty(preview: CsvPreview): void {
           : `${column.propertyName} (${column.type})`;
     console.log(`  ${chalk.gray(`${column.header} →`)} ${to}`);
   }
+  const newOptions = Object.entries(preview.newOptions ?? {});
+  if (newOptions.length) {
+    console.log(chalk.green('\n  Options the import will add:'));
+    for (const [columnId, names] of newOptions) {
+      const column = preview.columns.find((c) => (c.target.kind === 'property' ? c.target.propertyId : `new:${c.propertyName ?? ''}`) === columnId);
+      console.log(`    ${column?.propertyName ?? columnId}: ${names.join(', ')}`);
+    }
+  }
   const skipped = preview.rows.filter((r) => r.errors.length > 0).map((r) => ({ index: r.index, errors: r.errors }));
   outputCsvSkipped(skipped);
   console.log(chalk.gray('\n  Nothing was created. Run again without --dry-run to import.'));
