@@ -374,6 +374,44 @@ exponential pages restore <page-id> --revision <rev-id> --note "Undo the agent r
 `exponential search "<text>" --semantic --workspace acme` runs the same search by meaning
 across meetings, resources, documents and pages (`--types page` to narrow).
 
+### Databases — typed tables inside pages
+
+A database is a block in a page's body, owned by that page; each row is a page of its own
+(body, comments, history) hidden from the Pages list. **Writes are typed**: every value is
+checked against its property and a bad one is refused naming the property. Not a work
+tracker — use tickets, actions and projects for work.
+
+```bash
+# Create one on a page: it gets a title property and its block is placed at the end of the body
+exponential databases create --page <page-id> --name Metrics
+
+# Schema: types are text, number, select, multiSelect, date, checkbox, url, person,
+# createdTime, lastEditedTime, createdBy (title exists from creation; relation arrives with V3)
+exponential databases properties add <db-id> --name Status --type select \
+  --options "Not measured,Instrumenting,Tracked:green"
+exponential databases properties add <db-id> --name Owner --type person
+exponential databases properties update <db-id> Status --name Stage      # ids stay; no row is rewritten
+exponential databases properties reorder <db-id> <id1> <id2> <id3>
+
+# Rows: property by name or id; a select by option name; lists comma-separated; checkboxes yes/no
+exponential databases rows add <db-id> --set Name="Alert latency" --set Status=Tracked -n "From the CLEAR page"
+exponential databases rows update <row-id> --set Status=Instrumenting --clear Owner
+exponential databases rows list <db-id>                              # through the saved view
+exponential databases rows list <db-id> --filter "Status=Tracked" --filter "Score>5" --sort Score:desc
+exponential databases rows list <db-id> --filter "Status in Tracked,Instrumenting"
+
+# The page shows the table; a row is a page
+exponential pages get <page-id>
+exponential pages get <row-id>                                       # its property header, then its prose
+exponential databases get <db-id>
+exponential databases list --page <page-id>                          # detached ones too
+exponential databases delete <db-id> --yes                           # rows go with it
+```
+
+Removing the block from the page **detaches** the database (its rows wait 30 days for the
+purge); writing the marker line back re-attaches it. Rows follow the holding page for access,
+placement and publishing — `pages move`/`publish` on a row page are refused.
+
 ### Workspaces
 
 ```bash
