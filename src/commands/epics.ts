@@ -147,6 +147,11 @@ export function createEpicsCommand(): Command {
     .option('--priority <priority>', `Priority: ${EPIC_PRIORITIES.join(', ')}`)
     .option('--start <date>', 'Start date (YYYY-MM-DD or "null")')
     .option('--target <date>', 'Target date (YYYY-MM-DD or "null")')
+    .option(
+      '--owner <userId|null>',
+      'Hand the epic to this user (a member of its workspace). "null" is sent as null, ' +
+        'which the API refuses while an epic always has an owner',
+    )
     .action(
       async (
         options: {
@@ -157,6 +162,7 @@ export function createEpicsCommand(): Command {
           priority?: string;
           start?: string;
           target?: string;
+          owner?: string;
         },
         cmd: Command,
       ) => {
@@ -172,6 +178,12 @@ export function createEpicsCommand(): Command {
             }
             return d;
           };
+          // Same "null" sentinel as `tickets update --assignee`.
+          const parseNullableString = (v: string | undefined): string | null | undefined => {
+            if (v === undefined) return undefined;
+            if (v === 'null') return null;
+            return v;
+          };
           const description = options.description === 'null' ? null : options.description;
           const status = validateEpicStatus(options.status);
           const priority = validateEpicPriority(options.priority);
@@ -184,6 +196,7 @@ export function createEpicsCommand(): Command {
             priority,
             startDate: parseNullableDate(options.start),
             targetDate: parseNullableDate(options.target),
+            ownerId: parseNullableString(options.owner),
           });
           if (useJson) outputEpicJson(epic);
           else {
