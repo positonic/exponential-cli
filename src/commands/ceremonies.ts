@@ -391,25 +391,41 @@ function createOccurrencesCommand(): Command {
           const ref = parseOccurrenceRef(value);
           const workspaceId = await workspaceFor(client, ref, options.workspace);
           const occurrence = await client.ceremonies.getOccurrence(workspaceId, ref.id);
+          // Each extra has its own access rule (the notes page follows the
+          // ceremony's project), so one denied extra must not cost the rest.
+          const extrasErrors: Record<string, string> = {};
+          const attempt = async <T>(key: string, load: () => Promise<T>): Promise<T | null> => {
+            try {
+              return await load();
+            } catch (error) {
+              extrasErrors[key] = error instanceof Error ? error.message : String(error);
+              return null;
+            }
+          };
           const [notes, decisions, updates] = await Promise.all([
-            options.notes && occurrence.notesPageId
-              ? client.pages.get(occurrence.notesPageId)
-              : Promise.resolve(undefined),
-            // `decision.list` has no occurrence filter server-side; the log is
-            // small per workspace, so filter the confirmed rows here.
+            options.notes
+              ? attempt('notes', async () =>
+                  occurrence.notesPageId ? client.pages.get(occurrence.notesPageId) : null,
+                )
+              : undefined,
+            // `decision.list` has no occurrence filter server-side, so this reads
+            // the workspace's confirmed log and filters it here.
             options.decisions
-              ? client.decisions
-                  .list({ workspaceId })
-                  .then((rows) => rows.filter((d) => d.occurrenceId === occurrence.id))
-              : Promise.resolve(undefined),
+              ? attempt('decisions', async () =>
+                  (await client.decisions.list({ workspaceId })).filter(
+                    (d) => d.occurrenceId === occurrence.id,
+                  ),
+                )
+              : undefined,
             options.updates
-              ? client.ceremonies.updateSummary(workspaceId, occurrence.id)
-              : Promise.resolve(undefined),
+              ? attempt('updates', () => client.ceremonies.updateSummary(workspaceId, occurrence.id))
+              : undefined,
           ]);
           const extras = {
             ...(options.notes ? { notes: notes ?? null } : {}),
-            ...(decisions ? { decisions } : {}),
-            ...(updates ? { updates } : {}),
+            ...(options.decisions ? { decisions: decisions ?? null } : {}),
+            ...(options.updates ? { updates: updates ?? null } : {}),
+            ...(Object.keys(extrasErrors).length > 0 ? { extrasErrors } : {}),
           };
           if (useJson) outputOccurrenceJson(occurrence, extras);
           else outputOccurrencePretty(occurrence, extras);

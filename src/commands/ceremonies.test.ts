@@ -618,3 +618,22 @@ describe('create --template', () => {
     expect(ceremonies.create.mock.calls[1]![0]).toMatchObject({ slug: 'eng' });
   });
 });
+
+describe('occurrences get extras', () => {
+  it('a denied notes page costs only the notes', async () => {
+    const { pages } = makeClient();
+    pages.get.mockRejectedValue(new Error('Forbidden'));
+    await run(['occurrences', 'get', OCCURRENCE_ID, '--notes', '--decisions']);
+    const out = jsonOutput();
+    expect(out.id).toBe(OCCURRENCE_ID);
+    expect(out.notes).toBeNull();
+    expect(out.extrasErrors).toEqual({ notes: 'Forbidden' });
+    expect((out.decisions as Array<{ id: string }>).map((d) => d.id)).toEqual(['d1']);
+  });
+
+  it('has no error key when everything loads', async () => {
+    makeClient();
+    await run(['occurrences', 'get', OCCURRENCE_ID, '--notes']);
+    expect(jsonOutput()).not.toHaveProperty('extrasErrors');
+  });
+});

@@ -3118,8 +3118,11 @@ export function outputOccurrencesPretty(occurrences: CeremonyOccurrenceListRow[]
 
 export interface OccurrenceExtras {
   notes?: KnowledgePage | null;
-  decisions?: DecisionListRow[];
-  updates?: CeremonyUpdateSummary;
+  /** Null when loading it failed; `extrasErrors` says why. */
+  decisions?: DecisionListRow[] | null;
+  updates?: CeremonyUpdateSummary | null;
+  /** Which opt-in sections couldn't be loaded, by name. The rest still came back. */
+  extrasErrors?: Record<string, string>;
 }
 
 export function outputOccurrenceJson(occurrence: CeremonyOccurrence, extras: OccurrenceExtras = {}): void {
@@ -3231,7 +3234,7 @@ export function outputOccurrencePretty(o: CeremonyOccurrence, extras: Occurrence
 
   outputAgendaPretty(o.agenda);
 
-  if (extras.notes !== undefined) {
+  if (extras.notes !== undefined && !extras.extrasErrors?.notes) {
     console.log(`\n${chalk.bold('Notes')}`);
     console.log(extras.notes?.body ? extras.notes.body : chalk.gray('No notes yet.'));
   }
@@ -3243,6 +3246,9 @@ export function outputOccurrencePretty(o: CeremonyOccurrence, extras: Occurrence
     }
   }
   if (extras.updates) outputOccurrenceUpdatesPretty(extras.updates);
+  for (const [section, message] of Object.entries(extras.extrasErrors ?? {})) {
+    console.log(chalk.yellow(`\nCouldn't load ${section}: ${message}`));
+  }
   console.log();
 }
 
