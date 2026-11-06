@@ -162,6 +162,44 @@ afterEach(() => {
 });
 
 describe('decisions list', () => {
+  it('--occurrence filters to that occurrence and caps after filtering', async () => {
+    const { list } = makeClient();
+    list.mockResolvedValue([
+      makeRow('d1', { occurrenceId: 'o1' }),
+      makeRow('d2', { occurrenceId: 'o2' }),
+      makeRow('d3', { occurrenceId: 'o1' }),
+      makeRow('d4', { occurrenceId: 'o1' }),
+    ]);
+    await run(['list', '--occurrence', 'o1', '--limit', '2']);
+    expect(list).toHaveBeenCalledWith(expect.objectContaining({ limit: undefined }));
+    const payload = JSON.parse(loggedText()) as {
+      decisions: Array<{ id: string }>;
+      occurrenceId: string;
+    };
+    expect(payload.decisions.map((d) => d.id)).toEqual(['d1', 'd3']);
+    expect(payload.occurrenceId).toBe('o1');
+  });
+
+  it('--occurrence takes the page URL and its workspace', async () => {
+    const { list } = makeClient();
+    list.mockResolvedValue([
+      makeRow('d1', { occurrenceId: 'o1' }),
+      makeRow('d2', { occurrenceId: 'o2' }),
+    ]);
+    await run(['list', '--occurrence', 'https://www.exponential.im/w/syntrofi/ceremonies/c1/o1']);
+    expect(resolveModule.resolveWorkspaceId).toHaveBeenCalledWith(expect.anything(), 'syntrofi');
+    const payload = JSON.parse(loggedText()) as { decisions: Array<{ id: string }>; occurrenceId: string };
+    expect(payload.decisions.map((d) => d.id)).toEqual(['d1']);
+    expect(payload.occurrenceId).toBe('o1');
+  });
+
+  it('refuses --meeting with --occurrence rather than ignoring one', async () => {
+    const { list, listForMeeting } = makeClient();
+    await expect(run(['list', '--meeting', 'm1', '--occurrence', 'o1'])).rejects.toThrow('process.exit(1)');
+    expect(list).not.toHaveBeenCalled();
+    expect(listForMeeting).not.toHaveBeenCalled();
+  });
+
   it('sends repeated --status as a statuses array', async () => {
     const { list } = makeClient();
     await run(['list', '--status', 'OPEN', '--status', 'accepted']);

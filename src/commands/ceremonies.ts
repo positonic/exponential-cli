@@ -1,0 +1,1125 @@
+import { Command } from 'commander';
+import chalk from 'chalk';
+import type {
+  CeremonyAgendaTemplateSection,
+  CeremonyCreateInput,
+  CeremonyImportDefinition,
+  CeremonyKind,
+  CeremonyUpdateInput,
+  ExponentialClient,
+} from 'exponential-sdk';
+import { getClient } from '../client/index.js';
+import { handleError } from '../utils/errors.js';
+import { readText, parseDate } from '../utils/input.js';
+import { resolveWorkspaceId } from '../utils/resolve.js';
+import {
+  shouldUseJson,
+  outputCeremoniesJson,
+  outputCeremoniesPretty,
+  outputCeremonyJson,
+  outputCeremonyPretty,
+  outputCeremonyTemplatesPretty,
+  outputCeremonyWritePretty,
+  outputOccurrencesJson,
+  outputOccurrencesPretty,
+  outputOccurrenceJson,
+  outputOccurrencePretty,
+  outputOccurrenceUpdatesPretty,
+  outputMyOccurrenceUpdatePretty,
+  outputAgendaPretty,
+  outputProjectOccurrencesPretty,
+} from '../utils/output.js';
+
+interface GlobalOptions {
+  json?: boolean;
+  pretty?: boolean;
+}
+
+const KINDS: CeremonyKind[] = [
+  'STANDUP',
+  'PLANNING',
+  'REVIEW',
+  'RETROSPECTIVE',
+  'PRIORITISATION',
+  'ALL_HANDS',
+  'ONE_ON_ONE',
+  'CUSTOM',
+];
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const CUID = /^c[a-z0-9]{24}$/;
+const OCCURRENCE_LIST_CAP = 200;
+
+function parseKind(value: string): CeremonyKind {
+  const upper = value.toUpperCase().replace(/-/g, '_') as CeremonyKind;
+  if (!KINDS.includes(upper)) {
+    throw new Error(`Invalid kind "${value}". Use one of: ${KINDS.join(', ')}`);
+  }
+  return upper;
+}
+
+function parseIntInRange(
+  value: string | undefined,
+  flag: string,
+  min: number,
+  max: number,
+): number | undefined {
+  if (value === undefined) return undefined;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < min || n > max) {
+    throw new Error(`${flag} must be an integer from ${min} to ${max} (got "${value}").`);
+  }
+  return n;
+}
+
+const collect = (value: string, previous: string[]) => [...previous, value];
+
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * A calendar day for --starts-on. The server reads `startsOn` as a UTC day (a
+ * @db.Date column), so a bare date has to be UTC midnight. `parseDate` gives
+ * local midnight, which is the previous day anywhere east of UTC, and on a
+ * biweekly cadence that puts every occurrence in the wrong week.
+ */
+function parseCalendarDate(value: string | undefined): Date | undefined {
+  const parsed = parseDate(value);
+  return value !== undefined && DATE_ONLY.test(value) ? new Date(`${value}T00:00:00.000Z`) : parsed;
+}
+
+/** The end of a window: a bare date includes that whole (local) day, since the server filters with `lte`. */
+function parseWindowEnd(value: string | undefined): Date | undefined {
+  const parsed = parseDate(value);
+  return value !== undefined && DATE_ONLY.test(value) ? new Date(`${value}T23:59:59.999`) : parsed;
+}
+
+/**
+ * An occurrence or ceremony reference: a bare CUID, or the web URL that
+ * `exponential.im` shows for it. A URL carries its own workspace slug, so a
+ * pasted link works without `--workspace` or a default workspace.
+ *
+ *   /w/<slug>/ceremonies/<ceremonyId>                 → ceremony
+ *   /w/<slug>/ceremonies/<ceremonyId>/<occurrenceId>  → occurrence
+ */
+export function parseCeremonyRef(value: string): {
+  workspaceSlug?: string;
+  ceremonyId?: string;
+  occurrenceId?: string;
+  id: string;
+} {
+  const match = value.match(/\/w\/([^/?#]+)\/ceremonies\/([^/?#]+)(?:\/([^/?#]+))?/);
+  if (!match) return { id: value };
+  const [, workspaceSlug, ceremonyId, occurrenceId] = match;
+  return {
+    workspaceSlug,
+    ceremonyId,
+    occurrenceId,
+    id: occurrenceId ?? ceremonyId!,
+  };
+}
+
+/** An occurrence reference. A ceremony's URL has no occurrence in it, so it can only be a mistake here. */
+export function parseOccurrenceRef(value: string): ReturnType<typeof parseCeremonyRef> {
+  const ref = parseCeremonyRef(value);
+  if (ref.ceremonyId && !ref.occurrenceId) {
+    throw new Error(
+      'That URL is a ceremony, not one of its occurrences. List them with `ceremonies occurrences list --ceremony <url>`.',
+    );
+  }
+  return ref;
+}
+
+/**
+ * A ceremony by id, or by its slug within the workspace (`leadership-weekly`).
+ * Slugs cost one list call, so an id-shaped value is passed straight through.
+ */
+async function resolveCeremonyId(
+  client: ExponentialClient,
+  workspaceId: string,
+  ref: string,
+): Promise<string> {
+  if (CUID.test(ref)) return ref;
+  const all = await client.ceremonies.list(workspaceId, { includeInactive: true });
+  const hit = all.find((c) => c.slug === ref || c.id === ref);
+  if (!hit) {
+    throw new Error(
+      `No ceremony "${ref}" in this workspace. Run \`exponential ceremonies list\` to see slugs and ids.`,
+    );
+  }
+  return hit.id;
+}
+
+/** Workspace for a command: the URL's slug wins, then --workspace, then the default. */
+async function workspaceFor(
+  client: ExponentialClient,
+  ref: { workspaceSlug?: string },
+  flag: string | undefined,
+): Promise<string> {
+  return resolveWorkspaceId(client, ref.workspaceSlug ?? flag);
+}
+
+function readAgendaTemplate(file: string | undefined): CeremonyAgendaTemplateSection[] | undefined {
+  const raw = readText(undefined, file);
+  if (raw === undefined) return undefined;
+  const parsed: unknown = JSON.parse(raw);
+  if (!Array.isArray(parsed)) {
+    throw new Error('--agenda-file must hold a JSON array of { key, type, title, minutes?, config? } sections.');
+  }
+  return parsed as CeremonyAgendaTemplateSection[];
+}
+
+/** --answers-file then --answer, validated before any request. Later flags win. */
+export function parseSuppliedAnswers(
+  pairs: string[],
+  file: string | undefined,
+): Record<string, string> {
+  const answers: Record<string, string> = {};
+  const raw = readText(undefined, file);
+  if (raw !== undefined) {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      throw new Error('--answers-file must hold a JSON object of { questionKey: markdown }.');
+    }
+    for (const [key, value] of Object.entries(parsed)) {
+      if (typeof value !== 'string') {
+        throw new Error(`--answers-file: the answer for "${key}" must be a string.`);
+      }
+      answers[key] = value;
+    }
+  }
+  for (const pair of pairs) {
+    const eq = pair.indexOf('=');
+    if (eq <= 0) throw new Error(`--answer takes key=markdown (got "${pair}").`);
+    answers[pair.slice(0, eq)] = pair.slice(eq + 1);
+  }
+  return answers;
+}
+
+/** Definition flags shared by create and update. */
+function addDefinitionOptions(cmd: Command): Command {
+  return cmd
+    .option('--name <name>', 'Display name (max 120 chars)')
+    .option('--slug <slug>', 'Workspace-unique slug (derived from the name when omitted)')
+    .option('--kind <kind>', `One of: ${KINDS.join(', ')}`)
+    .option(
+      '--cadence <rrule>',
+      'RRULE body, e.g. "FREQ=WEEKLY;BYDAY=MO;BYHOUR=10;BYMINUTE=0"',
+    )
+    .option('--timezone <iana>', 'IANA zone the cadence runs in, e.g. Europe/Madrid')
+    .option('--starts-on <date>', 'Anchor date the cadence expands from (YYYY-MM-DD)')
+    .option('--duration <minutes>', 'Length in minutes (5-1440)')
+    .option('--lead-time <hours>', 'Hours before the start to generate and circulate the agenda (0-336)')
+    .option('--owner <userId>', 'Owner user id (defaults to you on create)')
+    .option('--participant <userId>', 'Participant user id (repeatable; replaces the set on update)', collect, [])
+    .option('--project <projectId>', 'Reviewed project id (repeatable; replaces the set on update)', collect, [])
+    .option('--alias <title>', 'Meeting-title alias for auto-attach (repeatable; replaces the set on update)', collect, [])
+    .option('--product <productId>', 'Scope to a product id')
+    .option('--purpose <markdown>', 'Purpose (Markdown)')
+    .option('--purpose-file <path>', 'Purpose from a file ("-" = stdin)')
+    .option('--not-for <markdown>', 'What this ceremony is NOT for (Markdown)')
+    .option('--inputs <markdown>', 'Required inputs (Markdown)')
+    .option('--outputs <markdown>', 'Expected outputs (Markdown)')
+    .option('--agenda-file <path>', 'Agenda template: JSON array of { key, type, title, minutes? } ("-" = stdin)')
+    .option('--include-projects', 'Append the linked-projects section to agendas')
+    .option('--no-include-projects', 'Do not append the linked-projects section to agendas')
+    .option('--meeting-url <url>', 'Video room the ceremony meets in; recordings from it file themselves here ("" clears it)')
+    .option('--auto-extract-outputs', 'Extract outputs from every recording attached to an occurrence')
+    .option('--no-auto-extract-outputs', 'Stop extracting outputs automatically');
+}
+
+interface DefinitionOptions {
+  name?: string;
+  slug?: string;
+  kind?: string;
+  cadence?: string;
+  timezone?: string;
+  startsOn?: string;
+  duration?: string;
+  leadTime?: string;
+  owner?: string;
+  participant: string[];
+  project: string[];
+  alias: string[];
+  product?: string;
+  purpose?: string;
+  purposeFile?: string;
+  notFor?: string;
+  inputs?: string;
+  outputs?: string;
+  agendaFile?: string;
+  includeProjects?: boolean;
+  meetingUrl?: string;
+  autoExtractOutputs?: boolean;
+}
+
+/** Only the fields the user actually passed — update must never reset what it wasn't told about. */
+function definitionFields(options: DefinitionOptions, cmd: Command): Partial<CeremonyCreateInput> {
+  const fields: Partial<CeremonyCreateInput> = {};
+  if (options.name !== undefined) fields.name = options.name;
+  if (options.slug !== undefined) fields.slug = options.slug;
+  // Parsed here, not as a commander option parser: a throw there escapes the
+  // action's try/catch and prints a stack trace instead of the JSON error.
+  if (options.kind !== undefined) fields.kind = parseKind(options.kind);
+  if (options.cadence !== undefined) fields.cadenceRule = options.cadence;
+  if (options.timezone !== undefined) fields.timezone = options.timezone;
+  if (options.startsOn !== undefined) fields.startsOn = parseCalendarDate(options.startsOn);
+  const duration = parseIntInRange(options.duration, '--duration', 5, 24 * 60);
+  if (duration !== undefined) fields.durationMinutes = duration;
+  const leadTime = parseIntInRange(options.leadTime, '--lead-time', 0, 24 * 14);
+  if (leadTime !== undefined) fields.leadTimeHours = leadTime;
+  if (options.owner !== undefined) fields.ownerId = options.owner;
+  if (options.participant.length > 0) fields.participantUserIds = options.participant;
+  if (options.project.length > 0) fields.projectIds = options.project;
+  if (options.alias.length > 0) fields.aliases = options.alias;
+  if (options.product !== undefined) fields.productId = options.product;
+  const purpose = readText(options.purpose, options.purposeFile);
+  if (purpose !== undefined) fields.purpose = purpose;
+  if (options.notFor !== undefined) fields.notFor = options.notFor;
+  if (options.inputs !== undefined) fields.inputs = options.inputs;
+  if (options.outputs !== undefined) fields.outputs = options.outputs;
+  const agenda = readAgendaTemplate(options.agendaFile);
+  if (agenda !== undefined) fields.agendaTemplate = agenda;
+  if (cmd.getOptionValueSource('includeProjects') === 'cli') {
+    fields.includeProjects = options.includeProjects;
+  }
+  if (options.meetingUrl !== undefined) fields.meetingUrl = options.meetingUrl;
+  if (cmd.getOptionValueSource('autoExtractOutputs') === 'cli') {
+    fields.autoExtractOutputs = options.autoExtractOutputs;
+  }
+  return fields;
+}
+
+/** A point in time for add/move: ISO date-time; a bare date is rejected (it would mean midnight). */
+function parseDateTime(value: string, flag: string): Date {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    throw new Error(`${flag} needs a time too, e.g. 2026-11-04T10:00 (local) or 2026-11-04T09:00Z.`);
+  }
+  const date = parseDate(value);
+  if (!date) throw new Error(`${flag} is required.`);
+  return date;
+}
+
+function createOccurrencesCommand(): Command {
+  const occurrences = new Command('occurrences')
+    .alias('occurrence')
+    .description(
+      [
+        'Scheduled instances of a ceremony — the page at /w/<slug>/ceremonies/<ceremonyId>/<occurrenceId>.',
+        'Every <occurrence> argument takes the occurrence CUID or that full URL (the URL brings its own workspace).',
+      ].join('\n'),
+    );
+
+  occurrences
+    .command('list')
+    .description(
+      [
+        'Occurrences starting in a window, oldest first (max 200). Default window: 14 days either side of now.',
+        "--project <id> instead shows that project's Meetings timeline: newest first, one-offs included,",
+        'two weeks back to one week ahead by default, at most --per-ceremony rows per recurring ceremony, and leaving',
+        'out occurrences a recording on that project already captured.',
+      ].join(' '),
+    )
+    .option('--workspace <slug|id>', 'Workspace (defaults to your default workspace)')
+    .option('--ceremony <slug|id>', 'Only this ceremony')
+    .option('--project <id>', "A project's Meetings timeline (no workspace needed)")
+    .option('--per-ceremony <n>', 'With --project: rows per recurring ceremony (1-20, default 5)')
+    .option('--from <date>', 'Window start (YYYY-MM-DD or ISO)')
+    .option('--to <date>', 'Window end (YYYY-MM-DD or ISO)')
+    .action(
+      async (
+        options: {
+          workspace?: string;
+          ceremony?: string;
+          project?: string;
+          perCeremony?: string;
+          from?: string;
+          to?: string;
+        },
+        cmd: Command,
+      ) => {
+        const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+        const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+        try {
+          const client = getClient();
+          if (options.project) {
+            if (options.ceremony) throw new Error('Pass --project or --ceremony, not both.');
+            const rows = await client.ceremonies.listOccurrencesForProject({
+              projectId: options.project,
+              from: parseDate(options.from),
+              to: parseWindowEnd(options.to),
+              perCeremony: parseIntInRange(options.perCeremony, '--per-ceremony', 1, 20),
+            });
+            if (useJson) {
+              // `id` as well, so `.occurrences[].id` means the same in both modes.
+              console.log(
+                JSON.stringify(
+                  {
+                    occurrences: rows.map((row) => ({ id: row.occurrenceId, ...row })),
+                    total: rows.length,
+                    projectId: options.project,
+                  },
+                  null,
+                  2,
+                ),
+              );
+            } else {
+              outputProjectOccurrencesPretty(rows);
+            }
+            return;
+          }
+          const ref = options.ceremony ? parseCeremonyRef(options.ceremony) : undefined;
+          const workspaceId = await workspaceFor(client, ref ?? {}, options.workspace);
+          const now = Date.now();
+          const from = parseDate(options.from) ?? new Date(now - 14 * DAY_MS);
+          const to = parseWindowEnd(options.to) ?? new Date(now + 14 * DAY_MS);
+          const ceremonyId = ref
+            ? await resolveCeremonyId(client, workspaceId, ref.ceremonyId ?? ref.id)
+            : undefined;
+          const rows = await client.ceremonies.listOccurrences({ workspaceId, from, to, ceremonyId });
+          if (useJson) {
+            outputOccurrencesJson(rows, {
+              workspaceId,
+              from,
+              to,
+              ceremonyId: ceremonyId ?? null,
+              // The server returns at most 200, oldest first, so a full page has lost the newest rows.
+              truncated: rows.length >= OCCURRENCE_LIST_CAP,
+            });
+          }
+          else outputOccurrencesPretty(rows);
+        } catch (error) {
+          handleError(error, useJson);
+        }
+      },
+    );
+
+  occurrences
+    .command('get <occurrence>')
+    .description(
+      'One occurrence: status, agenda, recordings, notes page. --notes and --decisions pull in the rest of the meeting page.',
+    )
+    .option('--workspace <slug|id>', 'Workspace (not needed when you pass the URL)')
+    .option('--notes', "Include the occurrence's notes page body")
+    .option('--decisions', 'Include decisions and open questions logged against this occurrence')
+    .option('--updates', "Include participants' async updates (standups)")
+    .action(
+      async (
+        value: string,
+        options: { workspace?: string; notes?: boolean; decisions?: boolean; updates?: boolean },
+        cmd: Command,
+      ) => {
+        const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+        const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+        try {
+          const client = getClient();
+          const ref = parseOccurrenceRef(value);
+          const workspaceId = await workspaceFor(client, ref, options.workspace);
+          const occurrence = await client.ceremonies.getOccurrence(workspaceId, ref.id);
+          // Each extra has its own access rule (the notes page follows the
+          // ceremony's project), so one denied extra must not cost the rest.
+          const extrasErrors: Record<string, string> = {};
+          const attempt = async <T>(key: string, load: () => Promise<T>): Promise<T | null> => {
+            try {
+              return await load();
+            } catch (error) {
+              extrasErrors[key] = error instanceof Error ? error.message : String(error);
+              return null;
+            }
+          };
+          const [notes, decisions, updates] = await Promise.all([
+            options.notes
+              ? attempt('notes', async () =>
+                  occurrence.notesPageId ? client.pages.get(occurrence.notesPageId) : null,
+                )
+              : undefined,
+            // `decision.list` has no occurrence filter server-side, so this reads
+            // the workspace's confirmed log and filters it here.
+            options.decisions
+              ? attempt('decisions', async () =>
+                  (await client.decisions.list({ workspaceId })).filter(
+                    (d) => d.occurrenceId === occurrence.id,
+                  ),
+                )
+              : undefined,
+            options.updates
+              ? attempt('updates', () => client.ceremonies.updateSummary(workspaceId, occurrence.id))
+              : undefined,
+          ]);
+          const extras = {
+            ...(options.notes ? { notes: notes ?? null } : {}),
+            ...(options.decisions ? { decisions: decisions ?? null } : {}),
+            ...(options.updates ? { updates: updates ?? null } : {}),
+            ...(Object.keys(extrasErrors).length > 0 ? { extrasErrors } : {}),
+          };
+          if (useJson) outputOccurrenceJson(occurrence, extras);
+          else outputOccurrencePretty(occurrence, extras);
+        } catch (error) {
+          handleError(error, useJson);
+        }
+      },
+    );
+
+  occurrences
+    .command('updates <occurrence>')
+    .description("Every participant's async update for an occurrence, and who hasn't answered")
+    .option('--workspace <slug|id>', 'Workspace (not needed when you pass the URL)')
+    .action(async (value: string, options: { workspace?: string }, cmd: Command) => {
+      const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+      const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+      try {
+        const client = getClient();
+        const ref = parseOccurrenceRef(value);
+        const workspaceId = await workspaceFor(client, ref, options.workspace);
+        const summary = await client.ceremonies.updateSummary(workspaceId, ref.id);
+        if (useJson) console.log(JSON.stringify(summary, null, 2));
+        else outputOccurrenceUpdatesPretty(summary);
+      } catch (error) {
+        handleError(error, useJson);
+      }
+    });
+
+  occurrences
+    .command('my-update <occurrence>')
+    .description(
+      [
+        'Read, draft or write your own async update (standups ask: done, today, blockers).',
+        'No flags: show it. --draft: fill a draft from your activity since the last occurrence.',
+        '--answer key=markdown (repeatable) saves answers; --submit / --reopen changes its state.',
+      ].join(' '),
+    )
+    .option('--workspace <slug|id>', 'Workspace (not needed when you pass the URL)')
+    .option('--draft', 'Draft answers from your activity (leaves anything you wrote alone)')
+    .option('--answer <key=markdown>', 'An answer by question key (repeatable)', collect, [])
+    .option('--answers-file <path>', 'Answers as a JSON object { key: markdown } ("-" = stdin)')
+    .option('--blocker', 'Flag that something is blocking you')
+    .option('--no-blocker', 'Clear the blocker flag')
+    .option('--submit', 'Submit the update (refused if every answer is empty; see --allow-empty)')
+    .option('--allow-empty', 'With --submit: submit even though every answer is empty')
+    .option('--reopen', 'Reopen a submitted update')
+    .action(
+      async (
+        value: string,
+        options: {
+          workspace?: string;
+          draft?: boolean;
+          answer: string[];
+          answersFile?: string;
+          blocker?: boolean;
+          submit?: boolean;
+          allowEmpty?: boolean;
+          reopen?: boolean;
+        },
+        cmd: Command,
+      ) => {
+        const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+        const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+        try {
+          if (options.submit && options.reopen) {
+            throw new Error('Pass --submit or --reopen, not both.');
+          }
+          // A draft is a suggestion to read. What it writes to `answers` depends
+          // on whether a row exists, so `--draft --submit` would submit either
+          // an unreviewed machine draft or nothing at all.
+          if (options.draft && (options.submit || options.reopen)) {
+            throw new Error('Run --draft on its own, review it, then --submit. To re-draft a submitted update, --reopen first.');
+          }
+          const supplied = parseSuppliedAnswers(options.answer, options.answersFile);
+          const client = getClient();
+          const ref = parseOccurrenceRef(value);
+          const workspaceId = await workspaceFor(client, ref, options.workspace);
+          const blockerSet = cmd.getOptionValueSource('blocker') === 'cli';
+          const writing =
+            Object.keys(supplied).length > 0 || blockerSet || options.submit || options.reopen;
+
+          const current = await client.ceremonies.myUpdate(workspaceId, ref.id);
+          // The server drops keys it doesn't recognise without an error, so a
+          // typo would lose the answer and still report success. Check before
+          // anything is written, --draft included.
+          const known = current.questions.map((q) => q.key);
+          const unknown = Object.keys(supplied).filter((key) => !known.includes(key));
+          if (unknown.length > 0) {
+            throw new Error(
+              `Unknown answer key${unknown.length === 1 ? '' : 's'}: ${unknown.join(', ')}. ` +
+                (known.length > 0
+                  ? `This ceremony asks: ${known.join(', ')}.`
+                  : 'This ceremony kind has no async updates.'),
+            );
+          }
+
+          let update = options.draft
+            ? await client.ceremonies.draftMyUpdate(workspaceId, ref.id)
+            : current;
+
+          if (writing) {
+            // Save sends the whole answer map, so start from what is saved.
+            const answers: Record<string, string> = { ...update.answers, ...supplied };
+            if (
+              options.submit &&
+              !options.allowEmpty &&
+              !Object.values(answers).some((answer) => answer.trim() !== '')
+            ) {
+              throw new Error(
+                `Nothing to submit: every answer is empty. Pass --answer <key=markdown> (${known.join(', ')}), or --allow-empty.`,
+              );
+            }
+            update = await client.ceremonies.saveMyUpdate({
+              workspaceId,
+              occurrenceId: ref.id,
+              answers,
+              ...(blockerSet ? { flaggedBlocker: options.blocker } : {}),
+              ...(options.submit ? { submit: true } : options.reopen ? { submit: false } : {}),
+            });
+          }
+          if (useJson) console.log(JSON.stringify(update, null, 2));
+          else outputMyOccurrenceUpdatePretty(update);
+        } catch (error) {
+          handleError(error, useJson);
+        }
+      },
+    );
+
+  occurrences
+    .command('generate-agenda <occurrence>')
+    .description('Generate or regenerate the agenda (ceremony owner, or workspace owner/admin)')
+    .option('--workspace <slug|id>', 'Workspace (not needed when you pass the URL)')
+    .option(
+      '--circulate',
+      "Also notify participants and post to the ceremony's Matrix room. Re-sends both if already sent, so don't retry blindly",
+    )
+    .action(
+      async (value: string, options: { workspace?: string; circulate?: boolean }, cmd: Command) => {
+        const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+        const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+        try {
+          const client = getClient();
+          const ref = parseOccurrenceRef(value);
+          const workspaceId = await workspaceFor(client, ref, options.workspace);
+          const result = await client.ceremonies.generateAgenda(workspaceId, ref.id, {
+            circulate: options.circulate,
+          });
+          if (useJson) {
+            console.log(JSON.stringify(result, null, 2));
+          } else {
+            console.log(
+              `✓ Agenda generated: ${result.itemCount} item${result.itemCount === 1 ? '' : 's'}${result.circulated ? ', circulated' : ''}`,
+            );
+            if (options.circulate && !result.circulated) {
+              console.log(chalk.yellow('  Not circulated: this occurrence is skipped.'));
+            }
+            outputAgendaPretty(result.agenda);
+          }
+        } catch (error) {
+          handleError(error, useJson);
+        }
+      },
+    );
+
+  occurrences
+    .command('add')
+    .description('Add an occurrence off the cadence — a meeting that happened, or will, at another time (ceremony owner, or workspace owner/admin)')
+    .requiredOption('--ceremony <slug|id|url>', 'The ceremony')
+    .requiredOption('--at <datetime>', 'Start, e.g. 2026-11-04T10:00 (local) or 2026-11-04T09:00Z')
+    .option('--workspace <slug|id>', 'Workspace (not needed when you pass the URL)')
+    .action(
+      async (options: { workspace?: string; ceremony: string; at: string }, cmd: Command) => {
+        const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+        const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+        try {
+          const at = parseDateTime(options.at, '--at');
+          const client = getClient();
+          const ref = parseCeremonyRef(options.ceremony);
+          const workspaceId = await workspaceFor(client, ref, options.workspace);
+          const ceremonyId = await resolveCeremonyId(client, workspaceId, ref.ceremonyId ?? ref.id);
+          const result = await client.ceremonies.addOccurrence(workspaceId, ceremonyId, at);
+          if (useJson) console.log(JSON.stringify(result, null, 2));
+          else console.log(`✓ Occurrence ${result.id} added for ${new Date(result.scheduledStart).toLocaleString()}`);
+        } catch (error) {
+          handleError(error, useJson);
+        }
+      },
+    );
+
+  occurrences
+    .command('move <occurrence>')
+    .description('Move an occurrence that has not happened to another time; it keeps its agenda, notes and updates (ceremony owner, or workspace owner/admin)')
+    .requiredOption('--to <datetime>', 'New start, e.g. 2026-11-04T10:00 (local) or 2026-11-04T09:00Z')
+    .option('--workspace <slug|id>', 'Workspace (not needed when you pass the URL)')
+    .action(async (value: string, options: { workspace?: string; to: string }, cmd: Command) => {
+      const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+      const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+      try {
+        const to = parseDateTime(options.to, '--to');
+        const client = getClient();
+        const ref = parseOccurrenceRef(value);
+        const workspaceId = await workspaceFor(client, ref, options.workspace);
+        const result = await client.ceremonies.rescheduleOccurrence(workspaceId, ref.id, to);
+        if (useJson) console.log(JSON.stringify(result, null, 2));
+        else if (!result.movedFrom) console.log(`Occurrence ${result.id} is already at that time.`);
+        else {
+          console.log(
+            `✓ Occurrence ${result.id} moved from ${new Date(result.movedFrom).toLocaleString()} to ${new Date(result.scheduledStart).toLocaleString()}`,
+          );
+        }
+      } catch (error) {
+        handleError(error, useJson);
+      }
+    });
+
+  occurrences
+    .command('skip <occurrence>')
+    .description(
+      [
+        'Skip an occurrence with a reason; participants are notified (ceremony owner, or workspace owner/admin).',
+        'On a booked one-off this CANCELS the meeting: every attendee with an address, external ones included,',
+        'gets a calendar cancellation, the ceremony is retired, and it cannot be unskipped.',
+      ].join(' '),
+    )
+    .requiredOption('--reason <text>', 'Why it is skipped (1-500 chars)')
+    .option('--workspace <slug|id>', 'Workspace (not needed when you pass the URL)')
+    .action(async (value: string, options: { workspace?: string; reason: string }, cmd: Command) => {
+      const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+      const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+      try {
+        const client = getClient();
+        const ref = parseOccurrenceRef(value);
+        const workspaceId = await workspaceFor(client, ref, options.workspace);
+        const result = await client.ceremonies.skipOccurrence(workspaceId, ref.id, options.reason);
+        if (useJson) console.log(JSON.stringify(result, null, 2));
+        else console.log(`✓ Occurrence ${result.id} skipped`);
+      } catch (error) {
+        handleError(error, useJson);
+      }
+    });
+
+  occurrences
+    .command('unskip <occurrence>')
+    .description('Undo a skip (ceremony owner, or workspace owner/admin). A cancelled one-off cannot be unskipped.')
+    .option('--workspace <slug|id>', 'Workspace (not needed when you pass the URL)')
+    .action(async (value: string, options: { workspace?: string }, cmd: Command) => {
+      const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+      const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+      try {
+        const client = getClient();
+        const ref = parseOccurrenceRef(value);
+        const workspaceId = await workspaceFor(client, ref, options.workspace);
+        const result = await client.ceremonies.unskipOccurrence(workspaceId, ref.id);
+        if (useJson) console.log(JSON.stringify(result, null, 2));
+        else console.log(`✓ Occurrence ${result.id} is back to ${result.status}`);
+      } catch (error) {
+        handleError(error, useJson);
+      }
+    });
+
+  const agenda = new Command('agenda').description("Edit an occurrence's agenda by hand");
+
+  agenda
+    .command('add <occurrence>')
+    .description('Add an item to an agenda section; kept across regeneration')
+    .requiredOption('--section <key>', 'The section key (see `occurrences get`)')
+    .requiredOption('--title <text>', 'Item title (max 300 chars)')
+    .option('--detail <text>', 'One line of detail (max 500 chars)')
+    .option('--workspace <slug|id>', 'Workspace (not needed when you pass the URL)')
+    .action(
+      async (
+        value: string,
+        options: { workspace?: string; section: string; title: string; detail?: string },
+        cmd: Command,
+      ) => {
+        const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+        const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+        try {
+          const client = getClient();
+          const ref = parseOccurrenceRef(value);
+          const workspaceId = await workspaceFor(client, ref, options.workspace);
+          const result = await client.ceremonies.addAgendaItem({
+            workspaceId,
+            occurrenceId: ref.id,
+            sectionKey: options.section,
+            title: options.title,
+            detail: options.detail,
+          });
+          if (useJson) console.log(JSON.stringify(result, null, 2));
+          else {
+            console.log('✓ Agenda item added');
+            outputAgendaPretty(result.agenda);
+          }
+        } catch (error) {
+          handleError(error, useJson);
+        }
+      },
+    );
+
+  agenda
+    .command('resolve <occurrence> <itemId>')
+    .description('Mark an agenda item resolved (--reopen to undo)')
+    .option('--reopen', 'Mark it unresolved again')
+    .option('--workspace <slug|id>', 'Workspace (not needed when you pass the URL)')
+    .action(
+      async (
+        value: string,
+        itemId: string,
+        options: { workspace?: string; reopen?: boolean },
+        cmd: Command,
+      ) => {
+        const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+        const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+        try {
+          const client = getClient();
+          const ref = parseOccurrenceRef(value);
+          const workspaceId = await workspaceFor(client, ref, options.workspace);
+          const result = await client.ceremonies.resolveAgendaItem(
+            workspaceId,
+            ref.id,
+            itemId,
+            !options.reopen,
+          );
+          if (useJson) console.log(JSON.stringify(result, null, 2));
+          else console.log(options.reopen ? '✓ Agenda item reopened' : '✓ Agenda item resolved');
+        } catch (error) {
+          handleError(error, useJson);
+        }
+      },
+    );
+
+  occurrences.addCommand(agenda);
+
+  occurrences
+    .command('attach <occurrence>')
+    .description('Link a recorded meeting to the occurrence it captured (same workspace; you must be able to edit the meeting)')
+    .requiredOption('--meeting <id>', 'Recorded meeting (transcription session) id')
+    .action(async (value: string, options: { meeting: string }, cmd: Command) => {
+      const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+      const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+      try {
+        const client = getClient();
+        const ref = parseOccurrenceRef(value);
+        const result = await client.ceremonies.attachMeeting(options.meeting, ref.id);
+        if (useJson) console.log(JSON.stringify(result, null, 2));
+        else console.log(`✓ Meeting ${result.meetingId} attached to occurrence ${result.occurrenceId}`);
+      } catch (error) {
+        handleError(error, useJson);
+      }
+    });
+
+  occurrences
+    .command('detach <meetingId>')
+    .description('Unlink a recorded meeting from its occurrence')
+    .action(async (meetingId: string, _options: Record<string, never>, cmd: Command) => {
+      const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+      const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+      try {
+        const client = getClient();
+        const result = await client.ceremonies.detachMeeting(meetingId);
+        if (useJson) console.log(JSON.stringify(result, null, 2));
+        else console.log(`✓ Meeting ${result.meetingId} detached`);
+      } catch (error) {
+        handleError(error, useJson);
+      }
+    });
+
+  return occurrences;
+}
+
+export function createCeremoniesCommand(): Command {
+  const ceremonies = new Command('ceremonies').description(
+    [
+      'Recurring meeting definitions (Settings → Ceremonies) and their scheduled occurrences.',
+      '',
+      'A ceremony has a cadence (RRULE in a time zone), an owner, participants and an agenda template.',
+      'Each scheduled instance is an occurrence — see `ceremonies occurrences --help`.',
+      'Decisions logged in an occurrence live under `exponential decisions` (--occurrence).',
+      '',
+      'Some writes reach people or delete data. Read `<command> --help` first: update, occurrences skip,',
+      'occurrences generate-agenda --circulate, import and backfill.',
+    ].join('\n'),
+  );
+
+  ceremonies
+    .command('list')
+    .description('Ceremonies in a workspace, active first')
+    .option('--workspace <slug|id>', 'Workspace (defaults to your default workspace)')
+    .option('--include-inactive', 'Also list retired ceremonies')
+    .action(async (options: { workspace?: string; includeInactive?: boolean }, cmd: Command) => {
+      const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+      const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+      try {
+        const client = getClient();
+        const workspaceId = await resolveWorkspaceId(client, options.workspace);
+        const rows = await client.ceremonies.list(workspaceId, {
+          includeInactive: options.includeInactive,
+        });
+        if (useJson) outputCeremoniesJson(rows, { workspaceId });
+        else outputCeremoniesPretty(rows);
+      } catch (error) {
+        handleError(error, useJson);
+      }
+    });
+
+  ceremonies
+    .command('get <ceremony>')
+    .description('One ceremony with participants, projects and its recent + upcoming occurrences. Takes an id, slug or URL.')
+    .option('--workspace <slug|id>', 'Workspace (not needed when you pass the URL)')
+    .action(async (value: string, options: { workspace?: string }, cmd: Command) => {
+      const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+      const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+      try {
+        const client = getClient();
+        const ref = parseCeremonyRef(value);
+        const workspaceId = await workspaceFor(client, ref, options.workspace);
+        const id = await resolveCeremonyId(client, workspaceId, ref.ceremonyId ?? ref.id);
+        const ceremony = await client.ceremonies.get(workspaceId, id);
+        if (useJson) outputCeremonyJson(ceremony);
+        else outputCeremonyPretty(ceremony);
+      } catch (error) {
+        handleError(error, useJson);
+      }
+    });
+
+  ceremonies
+    .command('templates')
+    .description('Built-in ceremony templates, one per kind (the "Add from template" list)')
+    .action(async (_options: Record<string, never>, cmd: Command) => {
+      const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+      const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+      try {
+        const templates = await getClient().ceremonies.templates();
+        if (useJson) console.log(JSON.stringify({ templates, total: templates.length }, null, 2));
+        else outputCeremonyTemplatesPretty(templates);
+      } catch (error) {
+        handleError(error, useJson);
+      }
+    });
+
+  const create = addDefinitionOptions(
+    ceremonies
+      .command('create')
+      .description(
+        'Create a ceremony and schedule its first occurrences. Needs --name, --cadence, --timezone and --starts-on.',
+      )
+      .option('--workspace <slug|id>', 'Workspace (defaults to your default workspace)')
+      .option('--template <slug>', 'Start from a built-in template (see `ceremonies templates`); flags override it'),
+  );
+  create.action(
+    async (options: DefinitionOptions & { workspace?: string; template?: string }, cmd: Command) => {
+      const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+      const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+      try {
+        const client = getClient();
+        const workspaceId = await resolveWorkspaceId(client, options.workspace);
+        let base: Partial<CeremonyCreateInput> = {};
+        if (options.template) {
+          const templates = await client.ceremonies.templates();
+          const t = templates.find((x) => x.slug === options.template);
+          if (!t) {
+            throw new Error(
+              `No template "${options.template}". One of: ${templates.map((x) => x.slug).join(', ')}`,
+            );
+          }
+          // Not the slug: it has to be unique per workspace, so two ceremonies from
+          // one template would collide. The server derives it from the name.
+          const { slug: _slug, ...fields } = t;
+          base = fields;
+        }
+        const input = { ...base, ...definitionFields(options, cmd), workspaceId };
+        const missing = (['name', 'cadenceRule', 'timezone', 'startsOn'] as const).filter(
+          (k) => input[k] === undefined,
+        );
+        if (missing.length > 0) {
+          const flags: Record<string, string> = {
+            name: '--name',
+            cadenceRule: '--cadence',
+            timezone: '--timezone',
+            startsOn: '--starts-on',
+          };
+          throw new Error(`Missing ${missing.map((k) => flags[k]).join(', ')}.`);
+        }
+        const result = await client.ceremonies.create(input as CeremonyCreateInput);
+        if (useJson) console.log(JSON.stringify(result, null, 2));
+        else outputCeremonyWritePretty(result, 'created');
+      } catch (error) {
+        handleError(error, useJson);
+      }
+    },
+  );
+
+  const update = addDefinitionOptions(
+    ceremonies
+      .command('update <ceremony>')
+      .description(
+        [
+          'Edit a ceremony (id, slug or URL). Only the flags you pass change.',
+          'Changing --cadence, --timezone, --starts-on or --duration DELETES future PLANNED occurrences that have no',
+          'booking or recording, along with any agenda, notes link and async updates on them, and recreates them with',
+          'new ids. Occurrences moved or added by hand stay.',
+        ].join(' '),
+      )
+      .option('--workspace <slug|id>', 'Workspace (not needed when you pass the URL)')
+      .option('--active', 'Re-activate a retired ceremony')
+      .option('--inactive', 'Retire the ceremony (stops scheduling)'),
+  );
+  update.action(
+    async (
+      value: string,
+      options: DefinitionOptions & { workspace?: string; active?: boolean; inactive?: boolean },
+      cmd: Command,
+    ) => {
+      const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+      const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+      try {
+        if (options.active && options.inactive) throw new Error('Pass --active or --inactive, not both.');
+        const client = getClient();
+        const ref = parseCeremonyRef(value);
+        const workspaceId = await workspaceFor(client, ref, options.workspace);
+        const id = await resolveCeremonyId(client, workspaceId, ref.ceremonyId ?? ref.id);
+        const input: CeremonyUpdateInput = {
+          ...definitionFields(options, cmd),
+          workspaceId,
+          id,
+          ...(options.active ? { isActive: true } : options.inactive ? { isActive: false } : {}),
+        };
+        if (Object.keys(input).length === 2) {
+          throw new Error('Nothing to update — pass at least one field flag.');
+        }
+        const result = await client.ceremonies.update(input);
+        if (useJson) console.log(JSON.stringify(result, null, 2));
+        else outputCeremonyWritePretty(result, 'updated');
+      } catch (error) {
+        handleError(error, useJson);
+      }
+    },
+  );
+
+  ceremonies
+    .command('import <file>')
+    .description(
+      [
+        'Upsert ceremonies from a JSON array keyed by slug ("-" = stdin). Workspace owner/admin only.',
+        'People go by name or email: participantNames REPLACES the whole set, and a name that matches nobody is dropped',
+        'and reported as unresolved. Not atomic: a failure partway leaves the earlier definitions written.',
+      ].join(' '),
+    )
+    .option('--workspace <slug|id>', 'Workspace (defaults to your default workspace)')
+    .option('--timezone <iana>', 'Default zone for definitions without one')
+    .option('--starts-on <date>', 'Default anchor date for definitions without one')
+    .action(
+      async (
+        file: string,
+        options: { workspace?: string; timezone?: string; startsOn?: string },
+        cmd: Command,
+      ) => {
+        const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+        const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+        try {
+          const raw = readText(undefined, file);
+          const parsed: unknown = JSON.parse(raw ?? '');
+          if (!Array.isArray(parsed)) throw new Error('The import file must hold a JSON array of definitions.');
+          const client = getClient();
+          const workspaceId = await resolveWorkspaceId(client, options.workspace);
+          const results = await client.ceremonies.importDefinitions({
+            workspaceId,
+            definitions: parsed as CeremonyImportDefinition[],
+            timezone: options.timezone,
+            startsOn: parseCalendarDate(options.startsOn),
+          });
+          if (useJson) {
+            console.log(JSON.stringify({ results, total: results.length }, null, 2));
+          } else {
+            for (const r of results) {
+              console.log(
+                `✓ ${r.slug} ${r.action} (${r.occurrencesCreated} occurrence${r.occurrencesCreated === 1 ? '' : 's'} scheduled)`,
+              );
+              if (r.unresolved.length > 0) {
+                console.log(chalk.yellow(`    Unresolved people: ${r.unresolved.join(', ')}`));
+              }
+            }
+          }
+        } catch (error) {
+          handleError(error, useJson);
+        }
+      },
+    );
+
+  ceremonies
+    .command('backfill')
+    .description(
+      'Attach unattached recorded meetings to occurrences by alias. Dry run unless --apply, but even a dry run schedules any missing occurrences of active ceremonies. Workspace owner/admin only.',
+    )
+    .option('--workspace <slug|id>', 'Workspace (defaults to your default workspace)')
+    .option('--apply', 'Write the attachments (default is a dry-run report)')
+    .action(async (options: { workspace?: string; apply?: boolean }, cmd: Command) => {
+      const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+      const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+      try {
+        const client = getClient();
+        const workspaceId = await resolveWorkspaceId(client, options.workspace);
+        const result = await client.ceremonies.backfillAttachments(workspaceId, {
+          dryRun: !options.apply,
+        });
+        if (useJson) {
+          console.log(JSON.stringify(result, null, 2));
+        } else {
+          console.log(
+            chalk.bold(
+              `\n${result.dryRun ? 'Dry run' : 'Applied'}: ${result.matched} of ${result.scanned} meetings matched`,
+            ),
+          );
+          if (result.occurrencesCreated > 0) {
+            console.log(chalk.gray(`  Scheduled ${result.occurrencesCreated} missing occurrences (this happens even on a dry run).`));
+          }
+          for (const row of result.rows) {
+            const target = row.occurrenceId
+              ? chalk.green(`→ ${row.ceremonyName} ${row.scheduledStart ? new Date(row.scheduledStart).toLocaleString() : ''}`)
+              : chalk.gray(`— ${row.reason}`);
+            console.log(`  ${row.title ?? row.meetingId} ${target}`);
+          }
+          if (result.dryRun && result.matched > 0) {
+            console.log(chalk.gray('\nRe-run with --apply to write these attachments.'));
+          }
+        }
+      } catch (error) {
+        handleError(error, useJson);
+      }
+    });
+
+  ceremonies
+    .command('match-url <url>')
+    .description(
+      'Which ceremony meets in this video room, and the occurrence on now (or --at). Searches all your workspaces unless --workspace.',
+    )
+    .option('--at <datetime>', 'Match the occurrence on at this time instead of now')
+    .option('--workspace <slug|id>', 'Only look in this workspace')
+    .action(async (url: string, options: { at?: string; workspace?: string }, cmd: Command) => {
+      const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
+      const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
+      try {
+        const client = getClient();
+        const workspaceId = options.workspace
+          ? await resolveWorkspaceId(client, options.workspace)
+          : undefined;
+        const match = await client.ceremonies.matchMeetingUrl({
+          url,
+          at: options.at ? parseDateTime(options.at, '--at') : undefined,
+          workspaceId,
+        });
+        if (useJson) {
+          console.log(JSON.stringify({ match }, null, 2));
+        } else if (!match) {
+          console.log(chalk.gray('No ceremony meets in this room (or several do and none is on now).'));
+        } else {
+          console.log(`${chalk.bold(match.ceremony.name)} ${chalk.gray(`in ${match.workspace.name} · ${match.ceremony.id}`)}`);
+          if (match.project) console.log(`  ${chalk.gray('Project:')} ${match.project.name}`);
+          console.log(
+            match.occurrence
+              ? `  ${chalk.gray('Occurrence:')} ${new Date(match.occurrence.scheduledStart).toLocaleString()} ${chalk.gray(match.occurrence.id)}`
+              : chalk.gray('  No occurrence on at that time.'),
+          );
+        }
+      } catch (error) {
+        handleError(error, useJson);
+      }
+    });
+
+  ceremonies.addCommand(createOccurrencesCommand());
+
+  return ceremonies;
+}

@@ -110,6 +110,16 @@ describe('root --version does not shadow subcommand flags', () => {
 });
 
 describe('command registration', () => {
+  it('registers the ceremonies command group with its occurrences and agenda subcommands', () => {
+    const program = buildProgram();
+    const ceremonies = program.commands.find((c) => c.name() === 'ceremonies');
+    expect(ceremonies).toBeDefined();
+    const occurrences = ceremonies!.commands.find((c) => c.name() === 'occurrences');
+    expect(occurrences).toBeDefined();
+    const agenda = occurrences!.commands.find((c) => c.name() === 'agenda');
+    expect(agenda!.commands.map((c) => c.name()).sort()).toEqual(['add', 'resolve']);
+  });
+
   it('registers the databases command group with its properties and rows subcommands', () => {
     const program = buildProgram();
     const databases = program.commands.find((c) => c.name() === 'databases');
