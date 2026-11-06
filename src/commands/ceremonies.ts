@@ -860,7 +860,10 @@ export function createCeremoniesCommand(): Command {
               `No template "${options.template}". One of: ${templates.map((x) => x.slug).join(', ')}`,
             );
           }
-          base = { ...t };
+          // Not the slug: it has to be unique per workspace, so two ceremonies from
+          // one template would collide. The server derives it from the name.
+          const { slug: _slug, ...fields } = t;
+          base = fields;
         }
         const input = { ...base, ...definitionFields(options, cmd), workspaceId };
         const missing = (['name', 'cadenceRule', 'timezone', 'startsOn'] as const).filter(

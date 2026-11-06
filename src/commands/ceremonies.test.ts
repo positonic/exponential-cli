@@ -605,3 +605,16 @@ describe('references', () => {
     expect(ceremonies.get).toHaveBeenCalledWith('ws1', CEREMONY_ID);
   });
 });
+
+describe('create --template', () => {
+  it('leaves the slug to the server unless --slug is passed', async () => {
+    const { ceremonies } = makeClient();
+    const required = ['--timezone', 'Europe/Madrid', '--starts-on', '2026-10-05'];
+    await run(['create', '--template', 'daily-standup', '--name', 'Eng Standup', ...required]);
+    const input = ceremonies.create.mock.calls[0]![0] as Record<string, unknown>;
+    expect(input).not.toHaveProperty('slug');
+    expect(input.name).toBe('Eng Standup');
+    await run(['create', '--template', 'daily-standup', '--slug', 'eng', ...required]);
+    expect(ceremonies.create.mock.calls[1]![0]).toMatchObject({ slug: 'eng' });
+  });
+});
