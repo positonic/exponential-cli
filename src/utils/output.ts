@@ -3261,9 +3261,8 @@ export function outputProjectOccurrencesPretty(rows: ProjectOccurrenceRow[]): vo
   console.log(chalk.gray('─'.repeat(50)));
   for (const r of rows) {
     const color = getOccurrenceStatusColor(r.status);
-    const label = r.status === 'SKIPPED' ? 'CANCELLED' : r.status;
     const oneOff = r.isOneOff ? chalk.cyan(' [one-off]') : '';
-    console.log(`  ${formatInZone(r.scheduledStart)} ${chalk.bold(r.ceremonyName)}${oneOff} ${chalk[color](`[${label}]`)}`);
+    console.log(`  ${formatInZone(r.scheduledStart)} ${chalk.bold(r.ceremonyName)}${oneOff} ${chalk[color](`[${r.status}]`)}`);
     const meta = [`ID: ${r.occurrenceId}`, `${r.attendeeCount} attendee${r.attendeeCount === 1 ? '' : 's'}`, r.purpose].filter(Boolean);
     console.log(chalk.gray(`    ${meta.join(' · ')}`));
   }

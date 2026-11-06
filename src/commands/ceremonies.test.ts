@@ -680,3 +680,96 @@ describe('side-effecting commands', () => {
     expect(ceremonies.detachMeeting).toHaveBeenCalledWith('m1');
   });
 });
+
+describe('JSON contract', () => {
+  it('--project rows carry `id` like the default rows do', async () => {
+    const { ceremonies } = makeClient();
+    ceremonies.listOccurrencesForProject.mockResolvedValue([{ occurrenceId: 'o9', ceremonyName: 'X' }]);
+    await run(['occurrences', 'list', '--project', 'p1']);
+    expect(jsonOutput()).toMatchObject({ total: 1, occurrences: [{ id: 'o9', occurrenceId: 'o9' }] });
+  });
+
+  it('flags a full page of occurrences as truncated', async () => {
+    const { ceremonies } = makeClient();
+    await run(['occurrences', 'list']);
+    expect(jsonOutput().truncated).toBe(false);
+    ceremonies.listOccurrences.mockResolvedValue(Array.from({ length: 200 }, (_, i) => ({ id: `o${i}` })));
+    await run(['occurrences', 'list']);
+    expect(jsonOutput().truncated).toBe(true);
+  });
+
+  it('a bad --kind is a JSON error, not a stack trace', async () => {
+    const { ceremonies } = makeClient();
+    await expect(run(['update', CEREMONY_ID, '--kind', 'nonsense'])).rejects.toThrow('process.exit(1)');
+    expect(ceremonies.update).not.toHaveBeenCalled();
+    expect(String(vi.mocked(console.log).mock.calls.at(-1)?.[0])).toContain('Invalid kind');
+  });
+
+  it('--include-projects can undo --no-include-projects', async () => {
+    const { ceremonies } = makeClient();
+    await run(['update', CEREMONY_ID, '--include-projects']);
+    expect(ceremonies.update).toHaveBeenCalledWith({ workspaceId: 'ws1', id: CEREMONY_ID, includeProjects: true });
+  });
+});
+
+describe('pretty output on real shapes', () => {
+  beforeEach(() => {
+    Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true });
+  });
+
+  const printed = () => vi.mocked(console.log).mock.calls.map((c) => c.join(' ')).join('\n');
+
+  it('prints a one-off occurrence with a booking and no agenda', async () => {
+    const { ceremonies } = makeClient();
+    ceremonies.getOccurrence.mockResolvedValue(
+      makeOccurrence({
+        isOneOff: true,
+        purpose: 'Kickoff',
+        cadenceStart: null,
+        scheduledMeeting: { id: 'b1', status: 'confirmed', organizerId: 'u1', attendees: [{ userId: null, name: 'Ada' }] },
+      }),
+    );
+    await run(['occurrences', 'get', OCCURRENCE_ID]);
+    expect(printed()).toContain('Kickoff');
+    expect(printed()).toContain('confirmed · Ada');
+    expect(printed()).toContain('No agenda generated yet');
+  });
+
+  it('prints a ceremony with a null cadence and a moved occurrence', async () => {
+    const { ceremonies } = makeClient();
+    ceremonies.get.mockResolvedValue({
+      id: CEREMONY_ID,
+      name: 'One off',
+      kind: 'CUSTOM',
+      slug: 'one-off',
+      isActive: true,
+      isOneOff: true,
+      cadenceRule: null,
+      timezone: 'Europe/Berlin',
+      durationMinutes: 30,
+      leadTimeHours: 24,
+      meetingUrl: 'https://talk.example/rooms/x',
+      ownerId: 'u1',
+      owner: { id: 'u1', name: null, email: null },
+      participants: [],
+      projects: [],
+      aliases: [],
+      agendaTemplate: [],
+      occurrences: [
+        {
+          id: 'o1',
+          scheduledStart: new Date('2026-11-05T10:00:00Z'),
+          scheduledEnd: new Date('2026-11-05T11:00:00Z'),
+          cadenceStart: new Date('2026-11-04T10:00:00Z'),
+          status: 'PLANNED',
+          skipReason: null,
+          recordedMeetings: [],
+        },
+      ],
+    });
+    await run(['get', CEREMONY_ID]);
+    expect(printed()).toContain('one-off meeting');
+    expect(printed()).toContain('moved from');
+    expect(printed()).toContain('talk.example');
+  });
+});

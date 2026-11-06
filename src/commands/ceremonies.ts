@@ -48,6 +48,7 @@ const KINDS: CeremonyKind[] = [
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const CUID = /^c[a-z0-9]{24}$/;
+const OCCURRENCE_LIST_CAP = 200;
 
 function parseKind(value: string): CeremonyKind {
   const upper = value.toUpperCase().replace(/-/g, '_') as CeremonyKind;
@@ -199,7 +200,7 @@ function addDefinitionOptions(cmd: Command): Command {
   return cmd
     .option('--name <name>', 'Display name (max 120 chars)')
     .option('--slug <slug>', 'Workspace-unique slug (derived from the name when omitted)')
-    .option('--kind <kind>', `One of: ${KINDS.join(', ')}`, parseKind)
+    .option('--kind <kind>', `One of: ${KINDS.join(', ')}`)
     .option(
       '--cadence <rrule>',
       'RRULE body, e.g. "FREQ=WEEKLY;BYDAY=MO;BYHOUR=10;BYMINUTE=0"',
@@ -219,6 +220,7 @@ function addDefinitionOptions(cmd: Command): Command {
     .option('--inputs <markdown>', 'Required inputs (Markdown)')
     .option('--outputs <markdown>', 'Expected outputs (Markdown)')
     .option('--agenda-file <path>', 'Agenda template: JSON array of { key, type, title, minutes? } ("-" = stdin)')
+    .option('--include-projects', 'Append the linked-projects section to agendas')
     .option('--no-include-projects', 'Do not append the linked-projects section to agendas')
     .option('--meeting-url <url>', 'Video room the ceremony meets in; recordings from it file themselves here ("" clears it)')
     .option('--auto-extract-outputs', 'Extract outputs from every recording attached to an occurrence')
@@ -228,7 +230,7 @@ function addDefinitionOptions(cmd: Command): Command {
 interface DefinitionOptions {
   name?: string;
   slug?: string;
-  kind?: CeremonyKind;
+  kind?: string;
   cadence?: string;
   timezone?: string;
   startsOn?: string;
@@ -245,7 +247,7 @@ interface DefinitionOptions {
   inputs?: string;
   outputs?: string;
   agendaFile?: string;
-  includeProjects: boolean;
+  includeProjects?: boolean;
   meetingUrl?: string;
   autoExtractOutputs?: boolean;
 }
@@ -255,7 +257,9 @@ function definitionFields(options: DefinitionOptions, cmd: Command): Partial<Cer
   const fields: Partial<CeremonyCreateInput> = {};
   if (options.name !== undefined) fields.name = options.name;
   if (options.slug !== undefined) fields.slug = options.slug;
-  if (options.kind !== undefined) fields.kind = options.kind;
+  // Parsed here, not as a commander option parser: a throw there escapes the
+  // action's try/catch and prints a stack trace instead of the JSON error.
+  if (options.kind !== undefined) fields.kind = parseKind(options.kind);
   if (options.cadence !== undefined) fields.cadenceRule = options.cadence;
   if (options.timezone !== undefined) fields.timezone = options.timezone;
   if (options.startsOn !== undefined) fields.startsOn = parseCalendarDate(options.startsOn);
@@ -275,7 +279,6 @@ function definitionFields(options: DefinitionOptions, cmd: Command): Partial<Cer
   if (options.outputs !== undefined) fields.outputs = options.outputs;
   const agenda = readAgendaTemplate(options.agendaFile);
   if (agenda !== undefined) fields.agendaTemplate = agenda;
-  // `--no-include-projects` defaults the option to true; only send it when set explicitly.
   if (cmd.getOptionValueSource('includeProjects') === 'cli') {
     fields.includeProjects = options.includeProjects;
   }
@@ -312,7 +315,8 @@ function createOccurrencesCommand(): Command {
       [
         'Occurrences starting in a window, oldest first (max 200). Default window: 14 days either side of now.',
         "--project <id> instead shows that project's Meetings timeline: newest first, one-offs included,",
-        'two weeks back to one week ahead by default, and at most --per-ceremony rows per recurring ceremony.',
+        'two weeks back to one week ahead by default, at most --per-ceremony rows per recurring ceremony, and leaving',
+        'out occurrences a recording on that project already captured.',
       ].join(' '),
     )
     .option('--workspace <slug|id>', 'Workspace (defaults to your default workspace)')
@@ -346,7 +350,18 @@ function createOccurrencesCommand(): Command {
               perCeremony: parseIntInRange(options.perCeremony, '--per-ceremony', 1, 20),
             });
             if (useJson) {
-              console.log(JSON.stringify({ occurrences: rows, total: rows.length, projectId: options.project }, null, 2));
+              // `id` as well, so `.occurrences[].id` means the same in both modes.
+              console.log(
+                JSON.stringify(
+                  {
+                    occurrences: rows.map((row) => ({ id: row.occurrenceId, ...row })),
+                    total: rows.length,
+                    projectId: options.project,
+                  },
+                  null,
+                  2,
+                ),
+              );
             } else {
               outputProjectOccurrencesPretty(rows);
             }
@@ -361,7 +376,16 @@ function createOccurrencesCommand(): Command {
             ? await resolveCeremonyId(client, workspaceId, ref.ceremonyId ?? ref.id)
             : undefined;
           const rows = await client.ceremonies.listOccurrences({ workspaceId, from, to, ceremonyId });
-          if (useJson) outputOccurrencesJson(rows, { workspaceId, from, to, ceremonyId: ceremonyId ?? null });
+          if (useJson) {
+            outputOccurrencesJson(rows, {
+              workspaceId,
+              from,
+              to,
+              ceremonyId: ceremonyId ?? null,
+              // The server returns at most 200, oldest first, so a full page has lost the newest rows.
+              truncated: rows.length >= OCCURRENCE_LIST_CAP,
+            });
+          }
           else outputOccurrencesPretty(rows);
         } catch (error) {
           handleError(error, useJson);
