@@ -701,9 +701,13 @@ interface NormalizedComment {
   updatedAt: Date;
   /** Feature comments only: set when the comment is a reply. */
   parentCommentId?: string | null;
-  /** Feature comments only: the anchored thread, when there is one. */
+  /** Feature and page comments: the anchored thread, when there is one. */
   threadId?: string | null;
+  /** The span an anchored thread's root comment quotes. */
+  quotedText?: string | null;
   resolvedAt?: Date | null;
+  /** On a page comment just created: whether the body now highlights its span. */
+  anchor?: unknown;
 }
 
 function normalizeComment(comment: AnyComment): NormalizedComment {
@@ -724,7 +728,9 @@ function normalizeComment(comment: AnyComment): NormalizedComment {
     updatedAt: new Date(comment.updatedAt),
     parentCommentId: (raw.parentId ?? null) as string | null,
     threadId: (raw.threadId ?? null) as string | null,
+    quotedText: (raw.quotedText ?? null) as string | null,
     resolvedAt: raw.resolvedAt ? new Date(raw.resolvedAt as string) : null,
+    anchor: raw.anchor,
   };
 }
 
@@ -739,9 +745,11 @@ function transformComment(comment: AnyComment): Record<string, unknown> {
     createdAt: n.createdAt.toISOString(),
     updatedAt: n.updatedAt.toISOString(),
   };
-  // Threading metadata only exists on feature comments — omit it elsewhere so
-  // the JSON of an action comment stays exactly as it was.
+  // Threading metadata only exists on feature and page comments — omit it
+  // elsewhere so the JSON of an action comment stays exactly as it was.
   if (n.threadId !== null) out.threadId = n.threadId;
+  if (n.quotedText) out.quotedText = n.quotedText;
+  if (n.anchor !== undefined) out.anchor = n.anchor;
   if (n.parentCommentId !== null && n.parentKey !== 'parentId') {
     out.parentCommentId = n.parentCommentId;
   }
@@ -766,6 +774,8 @@ export function outputCommentPretty(comment: AnyComment): void {
   console.log(chalk.gray('─'.repeat(50)));
   console.log(`${chalk.bold(author)} ${chalk.gray(`— ${when}`)}${badges ? ` ${badges}` : ''}`);
   console.log(chalk.gray(`  ID: ${n.id}`));
+  if (n.threadId) console.log(chalk.gray(`  Thread: ${n.threadId}`));
+  if (n.quotedText) console.log(chalk.gray(`  On: “${n.quotedText}”`));
   console.log();
   console.log(n.content);
   console.log();

@@ -450,6 +450,24 @@ exponential features comment add --feature <feature-id> \
 matching `@handle` the mention is prepended instead. `--mention` is repeatable,
 and an ambiguous name is an error rather than a guess.
 
+On a page, `--quote` anchors the comment to a span of the body, the way a
+highlight-and-comment does in the editor. Copy the text as it reads on the
+page, without Markdown syntax. If it appears more than once, `--quote-prefix` /
+`--quote-suffix` pick one occurrence by the text just before or after it. A
+quote that matches nothing, or several spans with nothing to choose between
+them, is refused rather than posted unanchored:
+
+```bash
+exponential pages comment add --page <page-id> \
+  --quote "the indicator" --quote-prefix "We pick " \
+  -m "Which indicator do we mean here?"
+exponential pages comment reply   --comment-id <comment-id> -m "The 7-day one"
+exponential pages comment resolve --page <page-id> --thread <thread-id>
+```
+
+The JSON output carries the new thread's `threadId` and an `anchor` object;
+`anchor.anchored` is false only when you can view the page but not edit it.
+
 Editing and deleting are author-only. Find ids with `exponential search "<text>"`.
 
 ### Runner — run your Assistant on this machine
