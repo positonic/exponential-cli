@@ -1,4 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createCeremoniesCommand, parseCeremonyRef } from './ceremonies.js';
 import * as clientModule from '../client/index.js';
 import * as resolveModule from '../utils/resolve.js';
@@ -154,6 +157,12 @@ async function run(args: string[]) {
   const cmd = createCeremoniesCommand();
   cmd.exitOverride();
   await cmd.parseAsync(args, { from: 'user' });
+}
+
+function writeTemp(name: string, contents: string): string {
+  const file = join(mkdtempSync(join(tmpdir(), 'exp-cli-test-')), name);
+  writeFileSync(file, contents);
+  return file;
 }
 
 function jsonOutput(): Record<string, unknown> {
@@ -452,5 +461,47 @@ describe('scheduling and room links', () => {
       workspaceId: undefined,
     });
     expect(jsonOutput()).toEqual({ match: null });
+  });
+});
+
+describe('dates', () => {
+  const originalTz = process.env.TZ;
+  afterEach(() => {
+    process.env.TZ = originalTz;
+  });
+
+  it('--starts-on is the same calendar day east of UTC', async () => {
+    process.env.TZ = 'Europe/Madrid';
+    const { ceremonies } = makeClient();
+    await run(['update', CEREMONY_ID, '--starts-on', '2026-11-09']);
+    expect(ceremonies.update.mock.calls[0]![0]).toMatchObject({
+      startsOn: new Date('2026-11-09T00:00:00.000Z'),
+    });
+  });
+
+  it('import --starts-on is the same calendar day east of UTC', async () => {
+    process.env.TZ = 'Asia/Tokyo';
+    const { ceremonies } = makeClient();
+    ceremonies.importDefinitions.mockResolvedValue([]);
+    await run(['import', writeTemp('defs.json', '[{"slug":"x"}]'), '--starts-on', '2026-11-09']);
+    expect(ceremonies.importDefinitions.mock.calls[0]![0]).toMatchObject({
+      startsOn: new Date('2026-11-09T00:00:00.000Z'),
+    });
+  });
+
+  it('a bare --to includes that whole day', async () => {
+    process.env.TZ = 'Europe/Madrid';
+    const { ceremonies } = makeClient();
+    await run(['occurrences', 'list', '--from', '2026-11-10', '--to', '2026-11-10']);
+    const input = ceremonies.listOccurrences.mock.calls[0]![0] as { from: Date; to: Date };
+    expect(input.from).toEqual(new Date('2026-11-10T00:00:00'));
+    expect(input.to).toEqual(new Date('2026-11-10T23:59:59.999'));
+  });
+
+  it('a --to with a time is taken as given', async () => {
+    const { ceremonies } = makeClient();
+    await run(['occurrences', 'list', '--to', '2026-11-10T12:00:00Z']);
+    const input = ceremonies.listOccurrences.mock.calls[0]![0] as { to: Date };
+    expect(input.to).toEqual(new Date('2026-11-10T12:00:00Z'));
   });
 });

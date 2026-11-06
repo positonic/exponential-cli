@@ -72,6 +72,25 @@ function parseIntInRange(
 
 const collect = (value: string, previous: string[]) => [...previous, value];
 
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * A calendar day for --starts-on. The server reads `startsOn` as a UTC day (a
+ * @db.Date column), so a bare date has to be UTC midnight. `parseDate` gives
+ * local midnight, which is the previous day anywhere east of UTC, and on a
+ * biweekly cadence that puts every occurrence in the wrong week.
+ */
+function parseCalendarDate(value: string | undefined): Date | undefined {
+  const parsed = parseDate(value);
+  return value !== undefined && DATE_ONLY.test(value) ? new Date(`${value}T00:00:00.000Z`) : parsed;
+}
+
+/** The end of a window: a bare date includes that whole (local) day, since the server filters with `lte`. */
+function parseWindowEnd(value: string | undefined): Date | undefined {
+  const parsed = parseDate(value);
+  return value !== undefined && DATE_ONLY.test(value) ? new Date(`${value}T23:59:59.999`) : parsed;
+}
+
 /**
  * An occurrence or ceremony reference: a bare CUID, or the web URL that
  * `exponential.im` shows for it. A URL carries its own workspace slug, so a
@@ -200,7 +219,7 @@ function definitionFields(options: DefinitionOptions, cmd: Command): Partial<Cer
   if (options.kind !== undefined) fields.kind = options.kind;
   if (options.cadence !== undefined) fields.cadenceRule = options.cadence;
   if (options.timezone !== undefined) fields.timezone = options.timezone;
-  if (options.startsOn !== undefined) fields.startsOn = parseDate(options.startsOn);
+  if (options.startsOn !== undefined) fields.startsOn = parseCalendarDate(options.startsOn);
   const duration = parseIntInRange(options.duration, '--duration', 5, 24 * 60);
   if (duration !== undefined) fields.durationMinutes = duration;
   const leadTime = parseIntInRange(options.leadTime, '--lead-time', 0, 24 * 14);
@@ -284,7 +303,7 @@ function createOccurrencesCommand(): Command {
             const rows = await client.ceremonies.listOccurrencesForProject({
               projectId: options.project,
               from: parseDate(options.from),
-              to: parseDate(options.to),
+              to: parseWindowEnd(options.to),
               perCeremony: parseIntInRange(options.perCeremony, '--per-ceremony', 1, 20),
             });
             if (useJson) {
@@ -298,7 +317,7 @@ function createOccurrencesCommand(): Command {
           const workspaceId = await workspaceFor(client, ref, options.workspace);
           const now = Date.now();
           const from = parseDate(options.from) ?? new Date(now - 14 * DAY_MS);
-          const to = parseDate(options.to) ?? new Date(now + 14 * DAY_MS);
+          const to = parseWindowEnd(options.to) ?? new Date(now + 14 * DAY_MS);
           const ceremonyId = options.ceremony
             ? await resolveCeremonyId(client, workspaceId, parseCeremonyRef(options.ceremony).id)
             : undefined;
@@ -872,7 +891,7 @@ export function createCeremoniesCommand(): Command {
             workspaceId,
             definitions: parsed as CeremonyImportDefinition[],
             timezone: options.timezone,
-            startsOn: parseDate(options.startsOn),
+            startsOn: parseCalendarDate(options.startsOn),
           });
           if (useJson) {
             console.log(JSON.stringify({ results, total: results.length }, null, 2));
