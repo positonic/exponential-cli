@@ -3,6 +3,7 @@ import { createAuthCommand } from './commands/auth.js';
 import { createActionsCommand } from './commands/actions.js';
 import { createContactsCommand } from './commands/contacts.js';
 import { createCeremoniesCommand } from './commands/ceremonies.js';
+import { createDatabasesCommand } from './commands/databases.js';
 import { createDecisionsCommand } from './commands/decisions.js';
 import { createDealsCommand } from './commands/deals.js';
 import { createEpicsCommand } from './commands/epics.js';
@@ -70,6 +71,7 @@ export function buildProgram(): Command {
   program.addCommand(createActionsCommand());
   program.addCommand(createContactsCommand());
   program.addCommand(createCeremoniesCommand());
+  program.addCommand(createDatabasesCommand());
   program.addCommand(createDecisionsCommand());
   program.addCommand(createDealsCommand());
   program.addCommand(createEpicsCommand());

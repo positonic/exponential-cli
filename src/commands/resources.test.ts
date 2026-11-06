@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { createResourcesCommand } from './resources.js';
+import { createResourcesCommand, collectTags } from './resources.js';
 import * as clientModule from '../client/index.js';
 import * as resolveModule from '../utils/resolve.js';
 
@@ -37,12 +37,16 @@ function makeClient() {
   const save = vi.fn().mockResolvedValue(makeResource());
   const setReadStatus = vi.fn().mockResolvedValue({ id: 'r1', readStatus: 'read', readAt: new Date() });
   const archive = vi.fn().mockResolvedValue({ success: true });
-  const client = { resources: { list, save, setReadStatus, archive } };
+  const get = vi.fn().mockResolvedValue(makeResource({ tags: ['ai', 'thought leader'] }));
+  const update = vi.fn().mockImplementation(async (id: string, input: Record<string, unknown>) =>
+    makeResource({ id, ...input }),
+  );
+  const client = { resources: { list, save, setReadStatus, archive, get, update } };
   vi.mocked(clientModule.getClient).mockReturnValue(
     client as unknown as ReturnType<typeof clientModule.getClient>,
   );
   vi.mocked(resolveModule.resolveWorkspaceId).mockResolvedValue('w1');
-  return { list, save, setReadStatus, archive };
+  return { list, save, setReadStatus, archive, get, update };
 }
 
 // Run args as if typed after `exponential resources`.
@@ -102,6 +106,54 @@ describe('resources', () => {
     const { save } = makeClient();
     await run(['create', '--url', 'https://example.com/post', '--read']);
     expect(save.mock.calls[0][0]).toMatchObject({ readStatus: 'read' });
+  });
+
+  it('collectTags accepts repeats and commas, trimming and de-duplicating', () => {
+    expect(collectTags('thought leader, ai', [])).toEqual(['thought leader', 'ai']);
+    expect(collectTags('ai,,agents', ['thought leader', 'ai'])).toEqual(['thought leader', 'ai', 'agents']);
+  });
+
+  it('create --tag forwards tags to save; no --tag sends none', async () => {
+    const { save } = makeClient();
+    await run(['create', '--url', 'https://example.com/post', '--tag', 'thought leader', '--tag', 'ai,agents']);
+    expect(save.mock.calls[0][0]).toMatchObject({ tags: ['thought leader', 'ai', 'agents'] });
+
+    await run(['create', '--url', 'https://example.com/post']);
+    expect(save.mock.calls[1][0].tags).toBeUndefined();
+  });
+
+  it('create --tag --json prints the saved tags', async () => {
+    const { save } = makeClient();
+    save.mockResolvedValueOnce(makeResource({ tags: ['thought leader'] }));
+    await run(['create', '--url', 'https://example.com/post', '--tag', 'thought leader']);
+    const out = JSON.parse(log.mock.calls.at(-1)![0] as string);
+    expect(out.tags).toEqual(['thought leader']);
+  });
+
+  it('list --tag filters by tag and echoes it in the JSON filters', async () => {
+    const { list } = makeClient();
+    await run(['list', '--tag', 'thought leader']);
+    expect(list.mock.calls[0][0]).toMatchObject({ tags: ['thought leader'] });
+    const out = JSON.parse(log.mock.calls.at(-1)![0] as string);
+    expect(out.filters).toEqual({ status: 'unread', tags: ['thought leader'] });
+  });
+
+  it('tag --add/--remove reads the current tags and writes the edited set', async () => {
+    const { get, update } = makeClient();
+    await run(['tag', 'r1', '--add', 'agents', '--add', 'ai', '--remove', 'thought leader']);
+    expect(get).toHaveBeenCalledWith('r1');
+    expect(update).toHaveBeenCalledWith('r1', { tags: ['ai', 'agents'] });
+  });
+
+  it('tag with neither --add nor --remove is rejected before any call', async () => {
+    const { get, update } = makeClient();
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await run(['tag', 'r1']);
+    expect(get).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
+    exit.mockRestore();
+    err.mockRestore();
   });
 
   it('mark-read, unread and archive act on the id', async () => {
