@@ -47,6 +47,7 @@ const KINDS: CeremonyKind[] = [
 ];
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+const CUID = /^c[a-z0-9]{24}$/;
 
 function parseKind(value: string): CeremonyKind {
   const upper = value.toUpperCase().replace(/-/g, '_') as CeremonyKind;
@@ -116,6 +117,17 @@ export function parseCeremonyRef(value: string): {
   };
 }
 
+/** An occurrence reference. A ceremony's URL has no occurrence in it, so it can only be a mistake here. */
+export function parseOccurrenceRef(value: string): ReturnType<typeof parseCeremonyRef> {
+  const ref = parseCeremonyRef(value);
+  if (ref.ceremonyId && !ref.occurrenceId) {
+    throw new Error(
+      'That URL is a ceremony, not one of its occurrences. List them with `ceremonies occurrences list --ceremony <url>`.',
+    );
+  }
+  return ref;
+}
+
 /**
  * A ceremony by id, or by its slug within the workspace (`leadership-weekly`).
  * Slugs cost one list call, so an id-shaped value is passed straight through.
@@ -125,7 +137,7 @@ async function resolveCeremonyId(
   workspaceId: string,
   ref: string,
 ): Promise<string> {
-  if (/^c[a-z0-9]{20,}$/.test(ref)) return ref;
+  if (CUID.test(ref)) return ref;
   const all = await client.ceremonies.list(workspaceId, { includeInactive: true });
   const hit = all.find((c) => c.slug === ref || c.id === ref);
   if (!hit) {
@@ -340,13 +352,13 @@ function createOccurrencesCommand(): Command {
             }
             return;
           }
-          const ref = options.ceremony ? parseCeremonyRef(options.ceremony) : {};
-          const workspaceId = await workspaceFor(client, ref, options.workspace);
+          const ref = options.ceremony ? parseCeremonyRef(options.ceremony) : undefined;
+          const workspaceId = await workspaceFor(client, ref ?? {}, options.workspace);
           const now = Date.now();
           const from = parseDate(options.from) ?? new Date(now - 14 * DAY_MS);
           const to = parseWindowEnd(options.to) ?? new Date(now + 14 * DAY_MS);
-          const ceremonyId = options.ceremony
-            ? await resolveCeremonyId(client, workspaceId, parseCeremonyRef(options.ceremony).id)
+          const ceremonyId = ref
+            ? await resolveCeremonyId(client, workspaceId, ref.ceremonyId ?? ref.id)
             : undefined;
           const rows = await client.ceremonies.listOccurrences({ workspaceId, from, to, ceremonyId });
           if (useJson) outputOccurrencesJson(rows, { workspaceId, from, to, ceremonyId: ceremonyId ?? null });
@@ -376,7 +388,7 @@ function createOccurrencesCommand(): Command {
         const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
         try {
           const client = getClient();
-          const ref = parseCeremonyRef(value);
+          const ref = parseOccurrenceRef(value);
           const workspaceId = await workspaceFor(client, ref, options.workspace);
           const occurrence = await client.ceremonies.getOccurrence(workspaceId, ref.id);
           const [notes, decisions, updates] = await Promise.all([
@@ -416,7 +428,7 @@ function createOccurrencesCommand(): Command {
       const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
       try {
         const client = getClient();
-        const ref = parseCeremonyRef(value);
+        const ref = parseOccurrenceRef(value);
         const workspaceId = await workspaceFor(client, ref, options.workspace);
         const summary = await client.ceremonies.updateSummary(workspaceId, ref.id);
         if (useJson) console.log(JSON.stringify(summary, null, 2));
@@ -473,7 +485,7 @@ function createOccurrencesCommand(): Command {
           }
           const supplied = parseSuppliedAnswers(options.answer, options.answersFile);
           const client = getClient();
-          const ref = parseCeremonyRef(value);
+          const ref = parseOccurrenceRef(value);
           const workspaceId = await workspaceFor(client, ref, options.workspace);
           const blockerSet = cmd.getOptionValueSource('blocker') === 'cli';
           const writing =
@@ -537,7 +549,7 @@ function createOccurrencesCommand(): Command {
         const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
         try {
           const client = getClient();
-          const ref = parseCeremonyRef(value);
+          const ref = parseOccurrenceRef(value);
           const workspaceId = await workspaceFor(client, ref, options.workspace);
           const result = await client.ceremonies.generateAgenda(workspaceId, ref.id, {
             circulate: options.circulate,
@@ -592,7 +604,7 @@ function createOccurrencesCommand(): Command {
       try {
         const to = parseDateTime(options.to, '--to');
         const client = getClient();
-        const ref = parseCeremonyRef(value);
+        const ref = parseOccurrenceRef(value);
         const workspaceId = await workspaceFor(client, ref, options.workspace);
         const result = await client.ceremonies.rescheduleOccurrence(workspaceId, ref.id, to);
         if (useJson) console.log(JSON.stringify(result, null, 2));
@@ -617,7 +629,7 @@ function createOccurrencesCommand(): Command {
       const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
       try {
         const client = getClient();
-        const ref = parseCeremonyRef(value);
+        const ref = parseOccurrenceRef(value);
         const workspaceId = await workspaceFor(client, ref, options.workspace);
         const result = await client.ceremonies.skipOccurrence(workspaceId, ref.id, options.reason);
         if (useJson) console.log(JSON.stringify(result, null, 2));
@@ -636,7 +648,7 @@ function createOccurrencesCommand(): Command {
       const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
       try {
         const client = getClient();
-        const ref = parseCeremonyRef(value);
+        const ref = parseOccurrenceRef(value);
         const workspaceId = await workspaceFor(client, ref, options.workspace);
         const result = await client.ceremonies.unskipOccurrence(workspaceId, ref.id);
         if (useJson) console.log(JSON.stringify(result, null, 2));
@@ -665,7 +677,7 @@ function createOccurrencesCommand(): Command {
         const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
         try {
           const client = getClient();
-          const ref = parseCeremonyRef(value);
+          const ref = parseOccurrenceRef(value);
           const workspaceId = await workspaceFor(client, ref, options.workspace);
           const result = await client.ceremonies.addAgendaItem({
             workspaceId,
@@ -701,7 +713,7 @@ function createOccurrencesCommand(): Command {
         const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
         try {
           const client = getClient();
-          const ref = parseCeremonyRef(value);
+          const ref = parseOccurrenceRef(value);
           const workspaceId = await workspaceFor(client, ref, options.workspace);
           const result = await client.ceremonies.resolveAgendaItem(
             workspaceId,
@@ -728,7 +740,7 @@ function createOccurrencesCommand(): Command {
       const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
       try {
         const client = getClient();
-        const ref = parseCeremonyRef(value);
+        const ref = parseOccurrenceRef(value);
         const result = await client.ceremonies.attachMeeting(options.meeting, ref.id);
         if (useJson) console.log(JSON.stringify(result, null, 2));
         else console.log(`✓ Meeting ${result.meetingId} attached to occurrence ${result.occurrenceId}`);

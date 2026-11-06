@@ -572,3 +572,36 @@ describe('my-update refuses what the server would silently lose', () => {
     expect(ceremonies.saveMyUpdate).not.toHaveBeenCalled();
   });
 });
+
+describe('references', () => {
+  it('occurrences list --ceremony takes the ceremony from an occurrence URL', async () => {
+    const { ceremonies } = makeClient();
+    await run(['occurrences', 'list', '--ceremony', URL]);
+    expect(resolveModule.resolveWorkspaceId).toHaveBeenCalledWith(expect.anything(), 'syntrofi');
+    expect(ceremonies.listOccurrences).toHaveBeenCalledWith(
+      expect.objectContaining({ ceremonyId: CEREMONY_ID }),
+    );
+  });
+
+  it('occurrences add takes the ceremony from an occurrence URL', async () => {
+    const { ceremonies } = makeClient();
+    await run(['occurrences', 'add', '--ceremony', URL, '--at', '2026-11-04T09:00Z']);
+    expect(ceremonies.addOccurrence).toHaveBeenCalledWith('ws1', CEREMONY_ID, expect.any(Date));
+  });
+
+  it('a ceremony URL is refused where an occurrence is needed', async () => {
+    const { ceremonies } = makeClient();
+    const ceremonyUrl = `https://www.exponential.im/w/syntrofi/ceremonies/${CEREMONY_ID}`;
+    await expect(run(['occurrences', 'get', ceremonyUrl])).rejects.toThrow('process.exit(1)');
+    expect(ceremonies.getOccurrence).not.toHaveBeenCalled();
+    await expect(run(['occurrences', 'skip', ceremonyUrl, '--reason', 'x'])).rejects.toThrow('process.exit(1)');
+    expect(ceremonies.skipOccurrence).not.toHaveBeenCalled();
+  });
+
+  it('a long slug with no hyphens is looked up, not taken for an id', async () => {
+    const { ceremonies } = makeClient();
+    ceremonies.list.mockResolvedValue([{ id: CEREMONY_ID, slug: 'communityleadershipweekly1', name: 'x' }]);
+    await run(['get', 'communityleadershipweekly1']);
+    expect(ceremonies.get).toHaveBeenCalledWith('ws1', CEREMONY_ID);
+  });
+});

@@ -11,6 +11,7 @@ import type {
   DecisionStatus,
 } from 'exponential-sdk';
 import { getClient } from '../client/index.js';
+import { parseOccurrenceRef } from './ceremonies.js';
 import { handleError } from '../utils/errors.js';
 import { readText, parseDate } from '../utils/input.js';
 import { resolveProductId, resolveWorkspaceId } from '../utils/resolve.js';
@@ -427,7 +428,7 @@ export function createDecisionsCommand(): Command {
     .option('--number <n>', 'One decision by its workspace sequence number (D-0003 is 3)')
     .option('--limit <n>', 'Cap the rows returned (1-500)')
     .option('--adr <id>', 'Decisions formalised as this ADR document')
-    .option('--occurrence <id>', 'Only decisions logged in this ceremony occurrence')
+    .option('--occurrence <id|url>', 'Only decisions logged in this ceremony occurrence (the URL brings its own workspace)')
     .action(
       async (
         options: {
@@ -449,6 +450,10 @@ export function createDecisionsCommand(): Command {
         const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
         const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
         try {
+          if (options.meeting && options.occurrence) {
+            throw new Error('Pass --meeting or --occurrence, not both.');
+          }
+          const occurrence = options.occurrence ? parseOccurrenceRef(options.occurrence) : undefined;
           const client = getClient();
 
           // A meeting resolves its own workspace, so this path works even
@@ -481,7 +486,7 @@ export function createDecisionsCommand(): Command {
             return;
           }
 
-          const workspaceId = await resolveWorkspaceId(client, options.workspace);
+          const workspaceId = await resolveWorkspaceId(client, occurrence?.workspaceSlug ?? options.workspace);
           // `listForAdr` is its own query, not a filter on the log — running
           // the unbounded list first and discarding it is a wasted round trip
           // over every decision the caller can see.
@@ -498,17 +503,17 @@ export function createDecisionsCommand(): Command {
                 search: options.search,
                 number: parsePositiveInt(options.number, '--number'),
                 // With --occurrence the cap applies after filtering, below.
-                limit: options.occurrence ? undefined : limit,
+                limit: occurrence ? undefined : limit,
               });
           // `decision.list` has no occurrence filter server-side, so this
           // one is applied here.
-          const rows = options.occurrence
-            ? all.filter((d) => d.occurrenceId === options.occurrence).slice(0, limit)
+          const rows = occurrence
+            ? all.filter((d) => d.occurrenceId === occurrence.id).slice(0, limit)
             : all;
           if (useJson) {
             outputDecisionsJson(
               rows,
-              options.occurrence ? { workspaceId, occurrenceId: options.occurrence } : { workspaceId },
+              occurrence ? { workspaceId, occurrenceId: occurrence.id } : { workspaceId },
             );
           }
           else outputDecisionsPretty(rows);
