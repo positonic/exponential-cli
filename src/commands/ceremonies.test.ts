@@ -637,3 +637,46 @@ describe('occurrences get extras', () => {
     expect(jsonOutput()).not.toHaveProperty('extrasErrors');
   });
 });
+
+describe('side-effecting commands', () => {
+  it('generate-agenda only circulates when asked', async () => {
+    const { ceremonies } = makeClient();
+    ceremonies.generateAgenda.mockResolvedValue({ occurrenceId: OCCURRENCE_ID, agenda: null, itemCount: 0, circulated: false });
+    await run(['occurrences', 'generate-agenda', OCCURRENCE_ID]);
+    expect(ceremonies.generateAgenda).toHaveBeenLastCalledWith('ws1', OCCURRENCE_ID, { circulate: undefined });
+    await run(['occurrences', 'generate-agenda', OCCURRENCE_ID, '--circulate']);
+    expect(ceremonies.generateAgenda).toHaveBeenLastCalledWith('ws1', OCCURRENCE_ID, { circulate: true });
+  });
+
+  it('import sends the definitions and defaults, and reports unresolved people', async () => {
+    const { ceremonies } = makeClient();
+    ceremonies.importDefinitions.mockResolvedValue([
+      { slug: 'x', action: 'updated', occurrencesCreated: 0, unresolved: ['Nobody'] },
+    ]);
+    const file = writeTemp('defs.json', '[{"slug":"x","participantNames":["Nobody"]}]');
+    await run(['import', file, '--timezone', 'Europe/Madrid']);
+    expect(ceremonies.importDefinitions).toHaveBeenCalledWith({
+      workspaceId: 'ws1',
+      definitions: [{ slug: 'x', participantNames: ['Nobody'] }],
+      timezone: 'Europe/Madrid',
+      startsOn: undefined,
+    });
+    expect(jsonOutput()).toMatchObject({ total: 1, results: [{ unresolved: ['Nobody'] }] });
+  });
+
+  it('import refuses a file that is not an array', async () => {
+    const { ceremonies } = makeClient();
+    await expect(run(['import', writeTemp('d.json', '{"slug":"x"}')])).rejects.toThrow('process.exit(1)');
+    expect(ceremonies.importDefinitions).not.toHaveBeenCalled();
+  });
+
+  it('unskip and detach address the right record', async () => {
+    const { ceremonies } = makeClient();
+    ceremonies.unskipOccurrence.mockResolvedValue({ id: OCCURRENCE_ID, status: 'PLANNED', skipReason: null });
+    ceremonies.detachMeeting.mockResolvedValue({ meetingId: 'm1', occurrenceId: null });
+    await run(['occurrences', 'unskip', URL]);
+    expect(ceremonies.unskipOccurrence).toHaveBeenCalledWith('ws1', OCCURRENCE_ID);
+    await run(['occurrences', 'detach', 'm1']);
+    expect(ceremonies.detachMeeting).toHaveBeenCalledWith('m1');
+  });
+});

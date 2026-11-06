@@ -558,7 +558,10 @@ function createOccurrencesCommand(): Command {
     .command('generate-agenda <occurrence>')
     .description('Generate or regenerate the agenda (ceremony owner, or workspace owner/admin)')
     .option('--workspace <slug|id>', 'Workspace (not needed when you pass the URL)')
-    .option('--circulate', 'Also notify participants that the agenda is ready')
+    .option(
+      '--circulate',
+      "Also notify participants and post to the ceremony's Matrix room. Re-sends both if already sent, so don't retry blindly",
+    )
     .action(
       async (value: string, options: { workspace?: string; circulate?: boolean }, cmd: Command) => {
         const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
@@ -576,6 +579,9 @@ function createOccurrencesCommand(): Command {
             console.log(
               `✓ Agenda generated: ${result.itemCount} item${result.itemCount === 1 ? '' : 's'}${result.circulated ? ', circulated' : ''}`,
             );
+            if (options.circulate && !result.circulated) {
+              console.log(chalk.yellow('  Not circulated: this occurrence is skipped.'));
+            }
             outputAgendaPretty(result.agenda);
           }
         } catch (error) {
@@ -586,7 +592,7 @@ function createOccurrencesCommand(): Command {
 
   occurrences
     .command('add')
-    .description('Add an occurrence off the cadence — a meeting that happened, or will, at another time (ceremony owner only)')
+    .description('Add an occurrence off the cadence — a meeting that happened, or will, at another time (ceremony owner, or workspace owner/admin)')
     .requiredOption('--ceremony <slug|id|url>', 'The ceremony')
     .requiredOption('--at <datetime>', 'Start, e.g. 2026-11-04T10:00 (local) or 2026-11-04T09:00Z')
     .option('--workspace <slug|id>', 'Workspace (not needed when you pass the URL)')
@@ -611,7 +617,7 @@ function createOccurrencesCommand(): Command {
 
   occurrences
     .command('move <occurrence>')
-    .description('Move an occurrence that has not happened to another time; it keeps its agenda, notes and updates (ceremony owner only)')
+    .description('Move an occurrence that has not happened to another time; it keeps its agenda, notes and updates (ceremony owner, or workspace owner/admin)')
     .requiredOption('--to <datetime>', 'New start, e.g. 2026-11-04T10:00 (local) or 2026-11-04T09:00Z')
     .option('--workspace <slug|id>', 'Workspace (not needed when you pass the URL)')
     .action(async (value: string, options: { workspace?: string; to: string }, cmd: Command) => {
@@ -637,7 +643,13 @@ function createOccurrencesCommand(): Command {
 
   occurrences
     .command('skip <occurrence>')
-    .description('Skip an occurrence with a reason; participants are told (ceremony owner only)')
+    .description(
+      [
+        'Skip an occurrence with a reason; participants are notified (ceremony owner, or workspace owner/admin).',
+        'On a booked one-off this CANCELS the meeting: every attendee with an address, external ones included,',
+        'gets a calendar cancellation, the ceremony is retired, and it cannot be unskipped.',
+      ].join(' '),
+    )
     .requiredOption('--reason <text>', 'Why it is skipped (1-500 chars)')
     .option('--workspace <slug|id>', 'Workspace (not needed when you pass the URL)')
     .action(async (value: string, options: { workspace?: string; reason: string }, cmd: Command) => {
@@ -657,7 +669,7 @@ function createOccurrencesCommand(): Command {
 
   occurrences
     .command('unskip <occurrence>')
-    .description('Undo a skip (ceremony owner only)')
+    .description('Undo a skip (ceremony owner, or workspace owner/admin). A cancelled one-off cannot be unskipped.')
     .option('--workspace <slug|id>', 'Workspace (not needed when you pass the URL)')
     .action(async (value: string, options: { workspace?: string }, cmd: Command) => {
       const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
@@ -792,6 +804,9 @@ export function createCeremoniesCommand(): Command {
       'A ceremony has a cadence (RRULE in a time zone), an owner, participants and an agenda template.',
       'Each scheduled instance is an occurrence — see `ceremonies occurrences --help`.',
       'Decisions logged in an occurrence live under `exponential decisions` (--occurrence).',
+      '',
+      'Some writes reach people or delete data. Read `<command> --help` first: update, occurrences skip,',
+      'occurrences generate-agenda --circulate, import and backfill.',
     ].join('\n'),
   );
 
@@ -907,7 +922,12 @@ export function createCeremoniesCommand(): Command {
     ceremonies
       .command('update <ceremony>')
       .description(
-        'Edit a ceremony (id, slug or URL). Only the flags you pass change. Changing the cadence reschedules future unattached occurrences.',
+        [
+          'Edit a ceremony (id, slug or URL). Only the flags you pass change.',
+          'Changing --cadence, --timezone, --starts-on or --duration DELETES future PLANNED occurrences that have no',
+          'booking or recording, along with any agenda, notes link and async updates on them, and recreates them with',
+          'new ids. Occurrences moved or added by hand stay.',
+        ].join(' '),
       )
       .option('--workspace <slug|id>', 'Workspace (not needed when you pass the URL)')
       .option('--active', 'Re-activate a retired ceremony')
@@ -948,7 +968,11 @@ export function createCeremoniesCommand(): Command {
   ceremonies
     .command('import <file>')
     .description(
-      'Upsert ceremonies from a JSON array keyed by slug ("-" = stdin). People by name/email via ownerName / participantNames. Workspace owner/admin only.',
+      [
+        'Upsert ceremonies from a JSON array keyed by slug ("-" = stdin). Workspace owner/admin only.',
+        'People go by name or email: participantNames REPLACES the whole set, and a name that matches nobody is dropped',
+        'and reported as unresolved. Not atomic: a failure partway leaves the earlier definitions written.',
+      ].join(' '),
     )
     .option('--workspace <slug|id>', 'Workspace (defaults to your default workspace)')
     .option('--timezone <iana>', 'Default zone for definitions without one')
@@ -994,7 +1018,7 @@ export function createCeremoniesCommand(): Command {
   ceremonies
     .command('backfill')
     .description(
-      'Attach unattached recorded meetings to occurrences by alias. Dry run unless --apply (a dry run still schedules any missing past occurrences). Workspace owner/admin only.',
+      'Attach unattached recorded meetings to occurrences by alias. Dry run unless --apply, but even a dry run schedules any missing occurrences of active ceremonies. Workspace owner/admin only.',
     )
     .option('--workspace <slug|id>', 'Workspace (defaults to your default workspace)')
     .option('--apply', 'Write the attachments (default is a dry-run report)')
@@ -1015,6 +1039,9 @@ export function createCeremoniesCommand(): Command {
               `\n${result.dryRun ? 'Dry run' : 'Applied'}: ${result.matched} of ${result.scanned} meetings matched`,
             ),
           );
+          if (result.occurrencesCreated > 0) {
+            console.log(chalk.gray(`  Scheduled ${result.occurrencesCreated} missing occurrences (this happens even on a dry run).`));
+          }
           for (const row of result.rows) {
             const target = row.occurrenceId
               ? chalk.green(`→ ${row.ceremonyName} ${row.scheduledStart ? new Date(row.scheduledStart).toLocaleString() : ''}`)

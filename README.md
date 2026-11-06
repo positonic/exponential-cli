@@ -236,10 +236,10 @@ exponential ceremonies occurrences my-update <occurrence> --draft   # draft your
 exponential ceremonies occurrences my-update <occurrence> --answer "today=Review PRs" --submit
 
 # Agenda (owner, or workspace owner/admin, for generate/skip)
-exponential ceremonies occurrences generate-agenda <occurrence> --circulate
+exponential ceremonies occurrences generate-agenda <occurrence> --circulate   # notifies and posts to Matrix, again each run
 exponential ceremonies occurrences agenda add <occurrence> --section <key> --title "Pricing"
 exponential ceremonies occurrences agenda resolve <occurrence> <itemId>   # --reopen to undo
-exponential ceremonies occurrences skip <occurrence> --reason "Nothing to discuss"   # a booked one-off: cancels its invites
+exponential ceremonies occurrences skip <occurrence> --reason "Nothing to discuss"   # a booked one-off: cancels it for every attendee, no undo
 exponential ceremonies occurrences attach <occurrence> --meeting <meeting-cuid>
 
 # Off the cadence: add a meeting at another time, or move one that hasn't happened
@@ -255,6 +255,8 @@ exponential ceremonies match-url https://talk.example.com/rooms/standup
 # Create / edit definitions. update only changes the flags you pass.
 exponential ceremonies create --template daily-standup --timezone Europe/Madrid --starts-on 2026-10-05 \
   --participant <userId> --participant <userId>
+# Careful: --cadence, --timezone, --starts-on and --duration delete future PLANNED occurrences with no
+# booking or recording (agenda, notes link and async updates included) and recreate them with new ids.
 exponential ceremonies update leadership-weekly --duration 45
 exponential ceremonies update leadership-weekly --meeting-url https://talk.example.com/rooms/lw --auto-extract-outputs
 exponential ceremonies update leadership-weekly --inactive
