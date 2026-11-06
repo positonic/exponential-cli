@@ -155,6 +155,33 @@ function readAgendaTemplate(file: string | undefined): CeremonyAgendaTemplateSec
   return parsed as CeremonyAgendaTemplateSection[];
 }
 
+/** --answers-file then --answer, validated before any request. Later flags win. */
+export function parseSuppliedAnswers(
+  pairs: string[],
+  file: string | undefined,
+): Record<string, string> {
+  const answers: Record<string, string> = {};
+  const raw = readText(undefined, file);
+  if (raw !== undefined) {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      throw new Error('--answers-file must hold a JSON object of { questionKey: markdown }.');
+    }
+    for (const [key, value] of Object.entries(parsed)) {
+      if (typeof value !== 'string') {
+        throw new Error(`--answers-file: the answer for "${key}" must be a string.`);
+      }
+      answers[key] = value;
+    }
+  }
+  for (const pair of pairs) {
+    const eq = pair.indexOf('=');
+    if (eq <= 0) throw new Error(`--answer takes key=markdown (got "${pair}").`);
+    answers[pair.slice(0, eq)] = pair.slice(eq + 1);
+  }
+  return answers;
+}
+
 /** Definition flags shared by create and update. */
 function addDefinitionOptions(cmd: Command): Command {
   return cmd
@@ -414,7 +441,8 @@ function createOccurrencesCommand(): Command {
     .option('--answers-file <path>', 'Answers as a JSON object { key: markdown } ("-" = stdin)')
     .option('--blocker', 'Flag that something is blocking you')
     .option('--no-blocker', 'Clear the blocker flag')
-    .option('--submit', 'Submit the update')
+    .option('--submit', 'Submit the update (refused if every answer is empty; see --allow-empty)')
+    .option('--allow-empty', 'With --submit: submit even though every answer is empty')
     .option('--reopen', 'Reopen a submitted update')
     .action(
       async (
@@ -426,6 +454,7 @@ function createOccurrencesCommand(): Command {
           answersFile?: string;
           blocker?: boolean;
           submit?: boolean;
+          allowEmpty?: boolean;
           reopen?: boolean;
         },
         cmd: Command,
@@ -436,30 +465,50 @@ function createOccurrencesCommand(): Command {
           if (options.submit && options.reopen) {
             throw new Error('Pass --submit or --reopen, not both.');
           }
+          // A draft is a suggestion to read. What it writes to `answers` depends
+          // on whether a row exists, so `--draft --submit` would submit either
+          // an unreviewed machine draft or nothing at all.
+          if (options.draft && (options.submit || options.reopen)) {
+            throw new Error('Run --draft on its own, review it, then --submit. To re-draft a submitted update, --reopen first.');
+          }
+          const supplied = parseSuppliedAnswers(options.answer, options.answersFile);
           const client = getClient();
           const ref = parseCeremonyRef(value);
           const workspaceId = await workspaceFor(client, ref, options.workspace);
           const blockerSet = cmd.getOptionValueSource('blocker') === 'cli';
           const writing =
-            options.answer.length > 0 ||
-            options.answersFile !== undefined ||
-            blockerSet ||
-            options.submit ||
-            options.reopen;
+            Object.keys(supplied).length > 0 || blockerSet || options.submit || options.reopen;
+
+          const current = await client.ceremonies.myUpdate(workspaceId, ref.id);
+          // The server drops keys it doesn't recognise without an error, so a
+          // typo would lose the answer and still report success. Check before
+          // anything is written, --draft included.
+          const known = current.questions.map((q) => q.key);
+          const unknown = Object.keys(supplied).filter((key) => !known.includes(key));
+          if (unknown.length > 0) {
+            throw new Error(
+              `Unknown answer key${unknown.length === 1 ? '' : 's'}: ${unknown.join(', ')}. ` +
+                (known.length > 0
+                  ? `This ceremony asks: ${known.join(', ')}.`
+                  : 'This ceremony kind has no async updates.'),
+            );
+          }
 
           let update = options.draft
             ? await client.ceremonies.draftMyUpdate(workspaceId, ref.id)
-            : await client.ceremonies.myUpdate(workspaceId, ref.id);
+            : current;
 
           if (writing) {
             // Save sends the whole answer map, so start from what is saved.
-            const answers: Record<string, string> = { ...update.answers };
-            const fromFile = readText(undefined, options.answersFile);
-            if (fromFile !== undefined) Object.assign(answers, JSON.parse(fromFile) as Record<string, string>);
-            for (const pair of options.answer) {
-              const eq = pair.indexOf('=');
-              if (eq <= 0) throw new Error(`--answer takes key=markdown (got "${pair}").`);
-              answers[pair.slice(0, eq)] = pair.slice(eq + 1);
+            const answers: Record<string, string> = { ...update.answers, ...supplied };
+            if (
+              options.submit &&
+              !options.allowEmpty &&
+              !Object.values(answers).some((answer) => answer.trim() !== '')
+            ) {
+              throw new Error(
+                `Nothing to submit: every answer is empty. Pass --answer <key=markdown> (${known.join(', ')}), or --allow-empty.`,
+              );
             }
             update = await client.ceremonies.saveMyUpdate({
               workspaceId,

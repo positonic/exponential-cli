@@ -58,7 +58,11 @@ function makeOccurrence(overrides: Record<string, unknown> = {}) {
 }
 
 const standupUpdate = {
-  questions: [{ key: 'done', prompt: 'Done?', placeholder: '', draftFrom: [] }],
+  questions: [
+    { key: 'done', prompt: 'Done?', placeholder: '', draftFrom: [] },
+    { key: 'today', prompt: 'Next?', placeholder: '', draftFrom: [] },
+    { key: 'blockers', prompt: 'Blocked?', placeholder: '', draftFrom: [] },
+  ],
   draftAnswers: {},
   answers: { done: 'Shipped it', today: 'Old plan' },
   draftedAt: null,
@@ -503,5 +507,68 @@ describe('dates', () => {
     await run(['occurrences', 'list', '--to', '2026-11-10T12:00:00Z']);
     const input = ceremonies.listOccurrences.mock.calls[0]![0] as { to: Date };
     expect(input.to).toEqual(new Date('2026-11-10T12:00:00Z'));
+  });
+});
+
+describe('my-update refuses what the server would silently lose', () => {
+  it('rejects an unknown --answer key, naming the valid ones, and writes nothing', async () => {
+    const { ceremonies } = makeClient();
+    await expect(
+      run(['occurrences', 'my-update', OCCURRENCE_ID, '--answer', 'blokers=DB down', '--submit']),
+    ).rejects.toThrow('process.exit(1)');
+    expect(ceremonies.saveMyUpdate).not.toHaveBeenCalled();
+    expect(String(vi.mocked(console.log).mock.calls.at(-1)?.[0])).toContain('done, today, blockers');
+  });
+
+  it('checks keys before --draft writes anything', async () => {
+    const { ceremonies } = makeClient();
+    await expect(
+      run(['occurrences', 'my-update', OCCURRENCE_ID, '--draft', '--answer', 'nope=x']),
+    ).rejects.toThrow('process.exit(1)');
+    expect(ceremonies.draftMyUpdate).not.toHaveBeenCalled();
+  });
+
+  it('refuses to submit when every answer is empty', async () => {
+    const { ceremonies } = makeClient();
+    ceremonies.myUpdate.mockResolvedValue({ ...standupUpdate, answers: { done: '  ' } });
+    await expect(run(['occurrences', 'my-update', OCCURRENCE_ID, '--submit'])).rejects.toThrow('process.exit(1)');
+    expect(ceremonies.saveMyUpdate).not.toHaveBeenCalled();
+  });
+
+  it('--allow-empty submits anyway', async () => {
+    const { ceremonies } = makeClient();
+    ceremonies.myUpdate.mockResolvedValue({ ...standupUpdate, answers: {} });
+    await run(['occurrences', 'my-update', OCCURRENCE_ID, '--submit', '--allow-empty']);
+    expect(ceremonies.saveMyUpdate).toHaveBeenCalledWith(expect.objectContaining({ answers: {}, submit: true }));
+  });
+
+  it.each([['--submit'], ['--reopen']])('refuses --draft with %s', async (flag) => {
+    const { ceremonies } = makeClient();
+    await expect(run(['occurrences', 'my-update', OCCURRENCE_ID, '--draft', flag])).rejects.toThrow('process.exit(1)');
+    expect(ceremonies.draftMyUpdate).not.toHaveBeenCalled();
+    expect(ceremonies.saveMyUpdate).not.toHaveBeenCalled();
+  });
+
+  it('--draft alone drafts and does not save', async () => {
+    const { ceremonies } = makeClient();
+    await run(['occurrences', 'my-update', OCCURRENCE_ID, '--draft']);
+    expect(ceremonies.draftMyUpdate).toHaveBeenCalledWith('ws1', OCCURRENCE_ID);
+    expect(ceremonies.saveMyUpdate).not.toHaveBeenCalled();
+  });
+
+  it('--answers-file merges a JSON object; --answer wins', async () => {
+    const { ceremonies } = makeClient();
+    const file = writeTemp('a.json', '{"today":"from file","blockers":"none"}');
+    await run(['occurrences', 'my-update', OCCURRENCE_ID, '--answers-file', file, '--answer', 'today=from flag']);
+    expect(ceremonies.saveMyUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ answers: { done: 'Shipped it', today: 'from flag', blockers: 'none' } }),
+    );
+  });
+
+  it.each([['["a"]'], ['null'], ['"text"'], ['{"today":1}']])('rejects --answers-file holding %s', async (contents) => {
+    const { ceremonies } = makeClient();
+    const file = writeTemp('a.json', contents);
+    await expect(run(['occurrences', 'my-update', OCCURRENCE_ID, '--answers-file', file])).rejects.toThrow('process.exit(1)');
+    expect(ceremonies.saveMyUpdate).not.toHaveBeenCalled();
   });
 });
