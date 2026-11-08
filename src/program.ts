@@ -12,6 +12,7 @@ import { createLabelsCommand } from './commands/labels.js';
 import { createMeetingsCommand } from './commands/meetings.js';
 import { createOrganizationsCommand } from './commands/organizations.js';
 import { createPagesCommand } from './commands/pages.js';
+import { createPositionsCommand } from './commands/positions.js';
 import { createProductsCommand } from './commands/products.js';
 import { createProjectsCommand } from './commands/projects.js';
 import { createResourcesCommand } from './commands/resources.js';
@@ -88,6 +89,7 @@ export function buildProgram(): Command {
   program.addCommand(createTicketsCommand());
   program.addCommand(createTimeCommand());
   program.addCommand(createWorkspacesCommand());
+  program.addCommand(createPositionsCommand());
   program.addCommand(createGoalsCommand());
   program.addCommand(createOkrsCommand());
 
