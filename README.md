@@ -484,6 +484,38 @@ exponential workspaces set-default <workspace-slug>
 exponential workspaces members --search andi
 ```
 
+### Positions — roles & responsibilities
+
+The roles on a workspace's settings page (`/w/<slug>/settings`). `roles` is an
+alias for `positions`. A position is referenced by id or by title
+(case-insensitive); holders by name, email or user id.
+
+Writes need **your own login**: agent keys are refused. Owners and admins can
+do everything. A member who holds a position may edit its remit.
+
+```bash
+exponential positions list --workspace clear [--gaps]   # --gaps: members with no stated remit
+exponential positions show "Technical Director" --workspace clear
+
+exponential positions create --workspace clear \
+  --title "Travel researcher" \
+  --remit-file remit.md \
+  --not-accountable-for "Booking and payment" \
+  --holder andi --holder james@example.com
+
+exponential positions update "Travel researcher" --remit "Flights, hotels, visas" --clear-not-accountable-for
+exponential positions update "Travel researcher" --holder andi        # replaces holders
+exponential positions holders add "Travel researcher" james
+exponential positions holders remove "Travel researcher" andi
+exponential positions delete "Travel researcher"
+
+# Upsert many by title, all or nothing. Preview first with --dry-run.
+exponential positions import roles.json --dry-run
+```
+
+`roles.json` is `[{ "title", "remit", "notAccountableFor"?, "holders"?: ["name|email|id"] }]`.
+An import never renames a position or removes a holder.
+
 ### Comments and @mentions
 
 Features, tickets, actions, pages, and goals all take comments:
