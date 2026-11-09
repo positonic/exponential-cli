@@ -43,8 +43,11 @@ exponential auth whoami
 # Login with token
 exponential auth login --token <jwt> --api-url <url>
 
-# Check authentication status
+# Who the token signs in as: name, user id, and whether it is an external agent (and its owner)
 exponential auth whoami
+exponential auth whoami --json
+
+# Where the credentials live (offline; shows the token prefix)
 exponential auth status
 
 # Logout
