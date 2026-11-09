@@ -43,10 +43,15 @@ export function handleError(error: unknown, json: boolean = false): never {
         suggestion = 'Run: exponential auth login --token <new-token> --api-url <url>';
         break;
       case 'NOT_FOUND':
-        message = 'Resource not found';
+        // The server says what was not found ("Page not found"); keep it.
+        message = message || 'Resource not found';
         break;
       case 'FORBIDDEN':
-        message = 'Access denied';
+        // The server's message names the account that was refused, the
+        // project and the missing access — exactly what the person holding
+        // the token needs. A bare "Access denied" hid all of that.
+        message = message || 'Access denied';
+        suggestion = 'Run `exponential auth whoami` to see which account this token is; that is the account to grant access to.';
         break;
     }
 

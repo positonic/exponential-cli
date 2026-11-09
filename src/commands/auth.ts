@@ -58,11 +58,16 @@ export function createAuthCommand(): Command {
 
   auth
     .command('whoami')
-    .description('Show current authentication status')
-    .action(async () => {
+    .description('Show which account the stored token signs in as, and whether it is an agent')
+    .option('--json', 'Output as JSON')
+    .action(async (options: { json?: boolean }) => {
       if (!isAuthenticated()) {
-        console.log(chalk.yellow('Not authenticated.'));
-        console.log(chalk.gray('Run: exponential auth login --token <jwt> --api-url <url>'));
+        if (options.json) {
+          console.log(JSON.stringify({ error: { code: 'UNAUTHENTICATED', message: 'Not authenticated' } }, null, 2));
+        } else {
+          console.log(chalk.yellow('Not authenticated.'));
+          console.log(chalk.gray('Run: exponential auth login --token <jwt> --api-url <url>'));
+        }
         process.exit(1);
       }
 
@@ -70,15 +75,45 @@ export function createAuthCommand(): Command {
         const config = getConfig();
         const client = getClient();
 
-        // Validate token by listing workspaces
-        const workspaces = await client.workspaces.list();
+        // The account behind the token — an agent's shadow user for an
+        // exp_agent_… key — plus the workspaces it can see.
+        const [me, workspaces] = await Promise.all([
+          client.users.me(),
+          client.workspaces.list(),
+        ]);
+        const workspaceCount = (workspaces as unknown[]).length;
+
+        if (options.json) {
+          console.log(JSON.stringify({
+            id: me.id,
+            name: me.name,
+            email: me.email,
+            isAgent: me.isAgent,
+            agent: me.agent,
+            apiUrl: config.apiUrl,
+            workspaces: workspaceCount,
+            configPath: getConfigPath(),
+          }, null, 2));
+          return;
+        }
 
         console.log(chalk.green('Authenticated'));
+        console.log(`Account: ${chalk.bold(me.name ?? '(unnamed)')} ${chalk.gray(`(${me.id})`)}`);
+        if (me.email) {
+          console.log(chalk.gray(`Email: ${me.email}`));
+        }
+        if (me.isAgent) {
+          const owner = me.agent?.owner.name ?? me.agent?.owner.id ?? 'unknown';
+          console.log(`Type: ${chalk.cyan('External agent')} ${chalk.gray(`owned by ${owner}`)}`);
+          console.log(chalk.gray('To give this agent a restricted project, add this account on the project\'s Members tab.'));
+        } else {
+          console.log(`Type: ${chalk.cyan('Person')}`);
+        }
         console.log(chalk.gray(`API URL: ${config.apiUrl}`));
-        console.log(chalk.gray(`Workspaces: ${(workspaces as unknown[]).length}`));
+        console.log(chalk.gray(`Workspaces: ${workspaceCount}`));
         console.log(chalk.gray(`Config: ${getConfigPath()}`));
       } catch (error) {
-        handleError(error);
+        handleError(error, options.json);
       }
     });
 
